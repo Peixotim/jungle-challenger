@@ -13,7 +13,6 @@ export interface CreateWagerTransactionProps {
   gameId: string;
   kind: WagerTransactionKind;
   money: Money;
-  /** id at the provider, not the internal one */
   referenceExternalTransactionId?: string;
   createdAt: Date;
 }
