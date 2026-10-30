@@ -19,7 +19,6 @@ export class WalletBalanceChanged extends IntegrationEvent<WalletBalanceChangedD
   readonly eventType = 'WalletBalanceChanged';
   readonly version = 1;
 
-  /** `wallet` must already reflect the movement that produced `entry`. */
   static from(
     wallet: Wallet,
     entry: WalletLedgerEntry,
