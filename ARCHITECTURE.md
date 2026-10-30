@@ -60,9 +60,18 @@ src/
 │   └── errors/        erros de aplicação
 ├── infrastructure/
 │   ├── persistence/   mikro-orm.config, UnitOfWork, repositories/, mappers/, migrations/
+│   ├── observability/ JsonLogger, PrometheusMetrics, request-context
+│   ├── lifecycle/     LifecycleState
 │   ├── system/        SystemClock, UuidV7Generator
-│   └── (planejado)    messaging/sqs/, auth/, logging e métricas
-└── interface/         (planejado) http/, sqs/, workers/, health/
+│   └── (planejado)    messaging/sqs/, auth/
+├── interface/
+│   ├── http/          middleware/, filters/, problem (controllers: planejado)
+│   └── (planejado)    sqs/, workers/, health/
+├── modules/           módulos NestJS que compõem as camadas (composição)
+├── config/            configuração tipada, validada e carregada do ambiente
+├── bootstrap/         configure-app e encerramento gracioso
+├── app.module.ts
+└── main.ts
 ```
 
 Convenção dentro de cada módulo de domínio: `model/` (classes), `dtos/` (props e state), `enums/`.
@@ -93,17 +102,21 @@ de DDD), mas não carregam decorators nem imports de persistência.
   `ReprocessPendingReferences`, `PublishOutbox`, `ReconcileWallet` e as consultas.
 - **Persistência** (seção 7): schema com constraints e triggers, migrations reversíveis, Unit of Work e
   repositórios sobre MikroORM e PostgreSQL.
-- **Testes unitários** de todas as classes de domínio e de todos os use cases (Vitest).
+- **Bootstrap e operação** (seção 8): configuração validada, `main.ts` e `AppModule` completos, logs JSON com
+  correlation id, métricas Prometheus, erros `problem+json`, verificação de migrations no start e encerramento
+  gracioso.
+- **Testes unitários** de todas as classes de domínio, de todos os use cases e da camada de bootstrap (Vitest).
 - **Testes de integração** contra PostgreSQL real: migrations, constraints, idempotência, concorrência,
   atomicidade, referências fora de ordem e outbox.
+- **Teste e2e** que sobe o `AppModule` inteiro contra o banco real (`bun run test:e2e`).
 - **Infra local**: `docker-compose.yml` com PostgreSQL 17 e LocalStack 3.8.1 (somente SQS).
 - **Filas SQS**: `wager-transactions.fifo` e `wager-transactions-dlq.fifo` criadas por
   `docker/localstack/init-sqs.sh`.
 
 ### Pendente
 
-API HTTP, consumer SQS e publisher SQS (adapters das portas restantes), agendamento dos workers, adapters de
-log e métricas, `/health`, testes com SQS real e com 3 ou mais processos.
+Controllers da API HTTP (com validação de entrada e mapeamento dos erros de negócio para status), `/health` e
+`/metrics`, consumer e publisher SQS, agendamento dos workers, testes com SQS real e com 3 ou mais processos.
 
 ## 5. Modelo de domínio
 
@@ -416,7 +429,114 @@ senão a suíte recusa rodar. Cobre:
 
 A invariante `wallet.balance == saldo reconstruído pelo ledger` é verificada ao fim dos testes de dinheiro.
 
-## 8. Interpretações adicionais do enunciado
+## 8. Bootstrap, configuração e operação
+
+### 8.1 Composição
+
+O `AppModule` só compõe módulos; as regras ficam nas camadas internas.
+
+| Módulo | Entrega |
+|---|---|
+| `ConfigModule` (global) | `APP_CONFIG`, a configuração tipada e validada |
+| `ObservabilityModule` | `JsonLogger` (port `Logger`), `PrometheusMetrics` (port `Metrics`), `LifecycleState` |
+| `PersistenceModule` | `MikroOrmModule.forRootAsync` (sem *request context*, pois não usamos Identity Map), `UnitOfWork`, `DatabaseStartupCheck` |
+| `ApplicationModule` | `Clock`, `IdGenerator`, `WagerTransactionProcessor` e os use cases, montados por *factories* |
+
+A injeção é **sempre explícita** (`@Inject(TOKEN)` e `useFactory`), nunca por metadata de tipos do compilador
+(`emitDecoratorMetadata`): o Vitest usa esbuild, que não emite essa metadata, e as *factories* mantêm os use
+cases livres de decorators do NestJS. Os tokens são as próprias classes abstratas das portas.
+
+### 8.2 Configuração
+
+Lida do ambiente por `loadConfig`, validada de uma vez: um valor inválido **impede o start** e a mensagem lista
+**todos** os problemas, não só o primeiro. O `.env` é carregado por `process.loadEnvFile` (Node) ou
+automaticamente (Bun); variáveis já presentes no ambiente têm precedência. A senha do banco é mascarada no log
+de start. Ver `.env.example`.
+
+| Variável | Padrão | Observação |
+|---|---|---|
+| `DATABASE_URL` | obrigatória | `postgres://` ou `postgresql://` |
+| `DATABASE_POOL_MIN` / `MAX` | `2` / `20` | `min` não pode superar `max` |
+| `DATABASE_REQUIRE_MIGRATED` | `true` | recusa subir com migrations pendentes |
+| `NODE_ENV` | `development` | `development`, `test` ou `production` |
+| `LOG_LEVEL` | `info` (`error` em `test`) | `debug`, `info`, `warn`, `error` |
+| `HOST` / `PORT` | `0.0.0.0` / `8080` | |
+| `HTTP_BODY_LIMIT` | `100kb` | corpos maiores recebem `413` |
+| `HTTP_TRUST_PROXY` | `false` | `true`, `false` ou número de saltos |
+| `HTTP_KEEP_ALIVE_TIMEOUT_MS` | `65000` | acima do idle de 60s de LBs comuns |
+| `HTTP_HEADERS_TIMEOUT_MS` | `66000` | precisa ser maior que o keep-alive |
+| `HTTP_REQUEST_TIMEOUT_MS` | `30000` | |
+| `SHUTDOWN_TIMEOUT_MS` | `30000` | tempo máximo do encerramento gracioso |
+| `PENDING_REFERENCE_MAX_ATTEMPTS` | `10` | tentativas do `PENDING_REFERENCE` (seção 6.4) |
+
+### 8.3 Camada HTTP (`configureApp`)
+
+Ordem dos middlewares: contexto da requisição, cabeçalhos de segurança, *access log*, *parser* JSON, tradução de
+erros do *parser*. O app é criado com `bodyParser: false`: o JSON é registrado por nós, para que seus erros
+virem códigos estáveis (o Nest converte `SyntaxError` em `BadRequest` genérico e perde o tipo do erro) e para
+não aceitar `urlencoded`, que uma API JSON não precisa.
+
+- `X-Powered-By` removido; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+  `Cross-Origin-Resource-Policy`, `Content-Security-Policy` restritiva e `Cache-Control: no-store` (respostas
+  financeiras não devem ser cacheadas).
+- Sem CORS: o serviço é chamado por outros serviços, não por navegadores.
+- *Timeouts* do servidor aplicados a partir da configuração.
+- **Correlation id:** `X-Correlation-Id` do chamador é aceito se casar `[A-Za-z0-9._:-]{1,128}`; senão é gerado
+  um UUID. Vai no cabeçalho de resposta e em todo log da requisição.
+
+### 8.4 Erros
+
+Todo erro vira `application/problem+json` (formato do RFC 9457) pelo `AllExceptionsFilter`:
+
+```json
+{ "type": "about:blank", "title": "Bad Request", "status": 400, "code": "MALFORMED_JSON",
+  "detail": "request body is not valid JSON", "correlationId": "..." }
+```
+
+- `code` é estável e legível por máquina. Um `HttpException` pode carregar o seu no corpo
+  (`{ code, message }`); é o mecanismo para mapear os erros de negócio na API.
+- Erros inesperados e 5xx respondem `INTERNAL_ERROR` **sem a mensagem original** (que pode vazar detalhes
+  internos); a causa vai só para o log, com o mesmo `correlationId`.
+- Os detalhes de erro do *parser* são fixos: nunca ecoam pedaços do corpo recebido.
+
+### 8.5 Observabilidade
+
+- **Logs:** uma linha JSON por evento (`time`, `level`, `service`, `correlationId`, `context`, `message`, campos).
+  O `correlationId` vem de `AsyncLocalStorage`, então não precisa ser passado de mão em mão. Redação automática
+  de chaves sensíveis (`password`, `secret`, `token`, `authorization`, `cookie`, `apiKey`, `credential`) e de
+  `payload` e `body` inteiros; strings, listas e profundidade são limitadas; referências circulares e `bigint`
+  não quebram o log.
+- **Access log:** método, caminho **sem query string**, status e duração. Probes (`/health/*`, `/metrics`) saem
+  em `debug`.
+- **Métricas:** registro próprio em formato Prometheus (contadores e histogramas), sem dependência. Nunca lança
+  (métrica não pode derrubar uma transação de dinheiro): nomes inválidos são ignorados e há teto de 1.000 séries
+  por métrica contra explosão de cardinalidade. `render()` alimentará o `/metrics`.
+
+### 8.6 Ciclo de vida
+
+- **Start:** `DatabaseStartupCheck` testa a conexão e confere se todas as migrations foram aplicadas; se houver
+  pendentes, o processo **não sobe** e a mensagem diz quais e qual comando rodar. Migrations não rodam
+  automaticamente no start (várias instâncias subindo juntas disputariam a mudança de schema): são um passo de
+  deploy (`bun run migration:up`).
+- **Stop:** em `SIGTERM`/`SIGINT` o serviço marca `LifecycleState` (para a *readiness* passar a falhar e o
+  balanceador tirar a instância), para de aceitar conexões, espera as requisições em andamento e fecha o pool
+  do banco, com o limite de `SHUTDOWN_TIMEOUT_MS` (depois disso força `exit 1`). `unhandledRejection` e
+  `uncaughtException` são logados e levam ao mesmo encerramento com `exit 1`, porque o estado do processo não é
+  mais confiável.
+- **Falha de start:** erro de configuração ou do check do banco sai como uma linha JSON `fatal` no `stderr`
+  (com a lista de problemas) e `exit 1`.
+
+### 8.7 Execução
+
+```bash
+bun run db:up              # PostgreSQL e LocalStack
+bun run migration:up       # schema
+bun run dev                # Bun com --watch
+bun run start:bun          # Bun
+bun run build && bun run start:prod   # Node, a partir de dist/
+```
+
+## 9. Interpretações adicionais do enunciado
 
 O enunciado pede que interpretações adicionais sejam documentadas:
 
@@ -429,9 +549,10 @@ O enunciado pede que interpretações adicionais sejam documentadas:
   conflito (`EXTERNAL_ID_REUSED`), não replay: o header é a fonte da verdade.
 - O replay de uma transação devolve seu **estado atual** (ex.: uma `PENDING_REFERENCE` já resolvida volta como
   `PROCESSED`), sempre com o saldo observado quando o resultado foi decidido.
-- `maxReceiveCount` da fila ainda é provisório (seção 9).
+- `maxReceiveCount` da fila ainda é provisório (seção 10).
+- O `LOG_LEVEL` padrão em `test` é `error`, para a saída dos testes ficar limpa.
 
-## 9. Infraestrutura local
+## 10. Infraestrutura local
 
 ```bash
 docker compose up -d
@@ -449,7 +570,7 @@ docker compose up -d
   inbox no banco**, não do SQS FIFO (restrição inviolável nº 3 do enunciado).
 - Variáveis de ambiente: ver `.env.example`.
 
-## 10. Como trabalhamos
+## 11. Como trabalhamos
 
 - **Commits** em inglês, no padrão Conventional Commits (`feat`, `fix`, `test`, `docs`, `build`, `chore`,
   `style`), pequenos e focados, um arquivo por commit.
@@ -459,14 +580,20 @@ docker compose up -d
 - **Invariantes no banco**: unicidade, imutabilidade do ledger e não-negatividade do saldo serão aplicadas por
   constraints e triggers nas migrations, não só em código.
 
-## 11. Decisões em aberto
+## 12. Decisões em aberto
 
 | Tema | Situação |
 |---|---|
 | Mapeamento de status HTTP | a definir (inválido, conflito de idempotência, rejeição de negócio, pendente, falha transitória) |
 | Autenticação | opcional; se não implementada, documentar e deixar ponto de extensão (`AuthPort`) |
 
-## 12. Limitações conhecidas
+## 13. Limitações conhecidas
+
+- O encerramento gracioso é testado com um processo simulado (sinais emitidos em um `EventEmitter`). A entrega
+  real de `SIGTERM` não pôde ser verificada no Windows de desenvolvimento e fica para a execução em container
+  Linux, junto do teste com múltiplas instâncias.
+- Não há *rate limiting*, TLS nem CORS: o serviço é interno e assume um proxy ou gateway à frente. O
+  `X-Correlation-Id` do chamador é aceito (se bem formado) por rastreabilidade, não por confiança.
 
 - Os testes unitários dos use cases usam fakes em memória que **serializam** as unidades de trabalho e não têm
   rollback: provam a lógica, não a concorrência nem a atomicidade. Isso é provado pelos testes de integração
