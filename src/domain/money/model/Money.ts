@@ -1,5 +1,8 @@
 import { Decimal } from 'decimal.js';
-import { CurrencyMismatchError, InvalidMoneyError } from '../../errors/domain-errors.js';
+import {
+  CurrencyMismatchError,
+  InvalidMoneyError,
+} from '../../errors/domain-errors.js';
 import { MoneyProps } from '../dtos/MoneyProps.js';
 
 const D = Decimal.clone({ precision: 40 });
@@ -67,7 +70,10 @@ export class Money {
   }
 
   toJSON(): MoneyProps {
-    return { amount: this.value.toFixed(2), currency: this.currency };
+    return {
+      amount: this.value.toFixed(2),
+      currency: this.currency,
+    };
   }
 
   toString(): string {
