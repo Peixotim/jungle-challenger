@@ -14,6 +14,7 @@ import { Logger } from '../../src/application/ports/Logger.js';
 import { configureApp } from '../../src/bootstrap/configure-app.js';
 import { loadConfig } from '../../src/config/app-config.js';
 import { JsonLogger } from '../../src/infrastructure/observability/JsonLogger.js';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/PrometheusMetrics.js';
 import { AllExceptionsFilter } from '../../src/interface/http/filters/AllExceptionsFilter.js';
 
 @Controller()
@@ -75,11 +76,18 @@ async function boot(level: 'debug' | 'info' = 'debug') {
   const app = moduleRef.createNestApplication<NestExpressApplication>({
     bodyParser: false,
   });
-  configureApp(app, config, logger);
+  const metrics = new PrometheusMetrics();
+  configureApp(app, config, logger, metrics);
   await app.init();
   const records = () =>
     lines.map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { app, config, records, http: () => request(app.getHttpServer()) };
+  return {
+    app,
+    config,
+    metrics,
+    records,
+    http: () => request(app.getHttpServer()),
+  };
 }
 
 describe('configureApp', () => {
@@ -270,6 +278,27 @@ describe('configureApp', () => {
         .map((r) => r.path);
       expect(paths).toEqual(['/ok']);
     });
+  });
+
+  it('records request metrics by route pattern, not by raw path', async () => {
+    current = await boot();
+
+    await current.http().get('/ok?x=1').expect(200);
+    await current.http().get('/ok').expect(200);
+    await current.http().get('/not-registered-1').expect(404);
+    await current.http().get('/not-registered-2').expect(404);
+
+    const text = current.metrics.render();
+    expect(text).toContain(
+      'http_requests_total{method="GET",route="/ok",status="200"} 2',
+    );
+    expect(text).toContain(
+      'http_requests_total{method="GET",route="unmatched",status="404"} 2',
+    );
+    expect(text).not.toContain('not-registered');
+    expect(text).toContain(
+      'http_request_duration_seconds_count{method="GET",route="/ok"} 2',
+    );
   });
 
   it('applies the configured server timeouts', async () => {
