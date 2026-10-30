@@ -102,10 +102,9 @@ export function wagerBody(wallet, over = {}) {
 
 // Sums every series of a Prometheus counter, e.g. wager_duplicates_total{kind="BET"}.
 export function metricValue(name) {
-  const text = http.get(`${BASE_URL}/metrics`).body;
-  const pattern = new RegExp(`^${name}(?:\{[^}]*\})? (\S+)$`, 'gm');
-  let total = 0;
-  let match;
-  while ((match = pattern.exec(text)) !== null) total += Number(match[1]);
-  return total;
+  return http
+    .get(`${BASE_URL}/metrics`)
+    .body.split('\n')
+    .filter((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `))
+    .reduce((sum, line) => sum + Number(line.slice(line.lastIndexOf(' ') + 1)), 0);
 }

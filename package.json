@@ -27,7 +27,14 @@
     "migration:up": "bun src/infrastructure/persistence/migrate.ts up",
     "migration:down": "bun src/infrastructure/persistence/migrate.ts down",
     "migration:status": "bun src/infrastructure/persistence/migrate.ts status",
-    "load:smoke": "k6 run --summary-export=load/results/smoke.json load/scenarios/smoke.js"
+    "load:smoke": "k6 run --summary-export=load/results/smoke.json load/scenarios/smoke.js",
+    "load:spike": "k6 run --summary-export=load/results/spike.json load/scenarios/spike.js",
+    "load:stress": "k6 run --summary-export=load/results/stress.json load/scenarios/stress.js",
+    "load:soak": "k6 run --summary-export=load/results/soak.json load/scenarios/soak.js",
+    "load:contention": "k6 run --summary-export=load/results/contention.json load/scenarios/contention.js",
+    "load:idempotency-http": "k6 run --summary-export=load/results/idempotency-http.json load/scenarios/idempotency-http.js",
+    "load:sqs-burst": "k6 run --summary-export=load/results/sqs-burst.json load/scenarios/sqs-burst.js",
+    "load:idempotency-sqs": "k6 run --summary-export=load/results/idempotency-sqs.json load/scenarios/idempotency-sqs.js"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3",
