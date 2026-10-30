@@ -42,7 +42,7 @@ export function buildApp(db: TestDatabase, maxReferenceAttempts = 3) {
     publisher,
     uow,
     createWallet: new CreateWallet(uow, clock, ids),
-    submit: new SubmitWagerTransaction(uow, clock, ids, processor),
+    submit: new SubmitWagerTransaction(uow, clock, ids, processor, metrics),
     reprocess: new ReprocessPendingReferences(
       uow,
       clock,
