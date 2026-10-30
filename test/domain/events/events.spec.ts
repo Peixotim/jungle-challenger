@@ -1,15 +1,15 @@
-import { InvalidTransactionError } from '../../errors/domain-errors.js';
-import { LedgerDirection } from '../../ledger/enums/LedgerDirection.js';
-import { Money } from '../../money/model/Money.js';
-import { FailureCode } from '../../wagering/enums/FailureCode.js';
-import { WagerTransactionKind as Kind } from '../../wagering/enums/WagerTransactionKind.js';
-import { WagerTransaction } from '../../wagering/model/WagerTransaction.js';
-import { Wallet } from '../../wallet/model/Wallet.js';
-import { EventContext } from '../dtos/EventContext.js';
-import { WagerTransactionPendingReference } from './WagerTransactionPendingReference.js';
-import { WagerTransactionProcessed } from './WagerTransactionProcessed.js';
-import { WagerTransactionRejected } from './WagerTransactionRejected.js';
-import { WalletBalanceChanged } from './WalletBalanceChanged.js';
+import { InvalidTransactionError } from '../../../src/domain/errors/domain-errors.js';
+import { LedgerDirection } from '../../../src/domain/ledger/enums/LedgerDirection.js';
+import { Money } from '../../../src/domain/money/model/Money.js';
+import { FailureCode } from '../../../src/domain/wagering/enums/FailureCode.js';
+import { WagerTransactionKind as Kind } from '../../../src/domain/wagering/enums/WagerTransactionKind.js';
+import { WagerTransaction } from '../../../src/domain/wagering/model/WagerTransaction.js';
+import { Wallet } from '../../../src/domain/wallet/model/Wallet.js';
+import { EventContext } from '../../../src/domain/events/dtos/EventContext.js';
+import { WagerTransactionPendingReference } from '../../../src/domain/events/model/WagerTransactionPendingReference.js';
+import { WagerTransactionProcessed } from '../../../src/domain/events/model/WagerTransactionProcessed.js';
+import { WagerTransactionRejected } from '../../../src/domain/events/model/WagerTransactionRejected.js';
+import { WalletBalanceChanged } from '../../../src/domain/events/model/WalletBalanceChanged.js';
 
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 const now = new Date('2026-01-01T00:00:00Z');
