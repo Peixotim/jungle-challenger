@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { HealthIndicator } from '../application/ports/HealthIndicator.js';
+import { SqsHealthIndicator } from '../infrastructure/messaging/sqs/SqsHealthIndicator.js';
 import { DatabaseHealthIndicator } from '../infrastructure/persistence/DatabaseHealthIndicator.js';
 import { AuthGuard, NoopAuthGuard } from '../interface/http/auth/AuthGuard.js';
 import {
@@ -12,11 +13,17 @@ import { WageringController } from '../interface/http/controllers/WageringContro
 import { WalletsController } from '../interface/http/controllers/WalletsController.js';
 import { AllExceptionsFilter } from '../interface/http/filters/AllExceptionsFilter.js';
 import { ApplicationModule } from './application.module.js';
+import { MessagingModule } from './messaging.module.js';
 import { ObservabilityModule } from './observability.module.js';
 import { PersistenceModule } from './persistence.module.js';
 
 @Module({
-  imports: [ApplicationModule, ObservabilityModule, PersistenceModule],
+  imports: [
+    ApplicationModule,
+    MessagingModule,
+    ObservabilityModule,
+    PersistenceModule,
+  ],
   controllers: [
     WalletsController,
     WageringController,
@@ -29,7 +36,7 @@ import { PersistenceModule } from './persistence.module.js';
     { provide: APP_GUARD, useExisting: AuthGuard },
     {
       provide: HEALTH_INDICATORS,
-      inject: [DatabaseHealthIndicator],
+      inject: [DatabaseHealthIndicator, SqsHealthIndicator],
       useFactory: (...indicators: HealthIndicator[]) => indicators,
     },
   ],
