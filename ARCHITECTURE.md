@@ -1,7 +1,7 @@
 # Arquitetura
 
-> Documento vivo. Registra o que já foi decidido, o que está implementado e o que ainda está em aberto.
-> Itens marcados com **(planejado)** ainda não existem no código.
+> Documento vivo. Registra as decisões, os trade-offs e as limitações do serviço. O que ainda está pendente fica
+> na seção 14.
 
 ## 1. Visão geral
 
@@ -63,11 +63,12 @@ src/
 │   ├── observability/ JsonLogger, PrometheusMetrics, request-context
 │   ├── lifecycle/     LifecycleState
 │   ├── system/        SystemClock, UuidV7Generator
-│   └── (planejado)    messaging/sqs/, auth/
+│   └── messaging/sqs/ cliente, SqsEventPublisher, SqsHealthIndicator
 ├── interface/
 │   ├── http/          controllers/, validation/ (Zod), middleware/, filters/, auth/, presenters/,
 │   │                  problem e error-mapping
-│   └── (planejado)    sqs/, workers/
+│   ├── sqs/           SqsConsumer, WagerMessageHandler, schemas, runner de ciclo de vida
+│   └── workers/       PeriodicTask e WorkerRunner
 ├── modules/           módulos NestJS que compõem as camadas (composição)
 ├── config/            configuração tipada, validada e carregada do ambiente
 ├── bootstrap/         configure-app e encerramento gracioso
@@ -78,16 +79,16 @@ src/
 Convenção dentro de cada módulo de domínio: `model/` (classes), `dtos/` (props e state), `enums/`.
 
 Os testes ficam fora de `src/`, em `test/`, espelhando a estrutura de `src/`: por exemplo, `Money` fica em
-`src/domain/money/model/Money.ts` e seu teste em `test/domain/money/Money.spec.ts`. Testes de integração e de
-concorrência seguirão o mesmo princípio, em pastas próprias dentro de `test/`.
+`src/domain/money/model/Money.ts` e seu teste em `test/domain/money/Money.spec.ts`. Testes de integração
+(`test/integration/`, banco e SQS reais) e e2e (`test/*.e2e-spec.ts`) seguem o mesmo princípio.
 
 ## 3. Domínio ≠ ORM
 
 As classes de `domain` **não são entidades do ORM**. Têm identidade e comportamento (são entidades no sentido
 de DDD), mas não carregam decorators nem imports de persistência.
 
-- O mapeamento para tabelas fica em `infrastructure/persistence` **(planejado)**, com schemas separados e
-  *mappers* que reconstroem o domínio via `rehydrate`.
+- O mapeamento para tabelas fica em `infrastructure/persistence`, com *mappers* explícitos que reconstroem o
+  domínio via `rehydrate`.
 - Trocar o ORM afeta só `infrastructure`.
 - Construtores são `private`; a criação passa por factories estáticas (`from`, `create`, `open`, `receive`,
   `enqueue`, `rehydrate`), então nenhum objeto inválido nasce pela API pública.
@@ -114,14 +115,15 @@ de DDD), mas não carregam decorators nem imports de persistência.
 - **Testes e2e** (`bun run test:e2e`) que sobem o `AppModule` inteiro contra o banco real e exercitam a API por
   HTTP: contratos, status, idempotência concorrente, saldo, rejeições, métricas, readiness e uma queda real do
   banco (um proxy TCP entre o app e o PostgreSQL é cortado e restaurado; a API responde `503` e se recupera).
-- **Infra local**: `docker-compose.yml` com PostgreSQL 17 e LocalStack 3.8.1 (somente SQS).
-- **Filas SQS**: `wager-transactions.fifo` e `wager-transactions-dlq.fifo` criadas por
-  `docker/localstack/init-sqs.sh`.
+- **Mensageria e workers** (seção 10): consumer SQS com inbox, `ack` após o commit, retry com backoff e DLQ;
+  publisher da outbox; workers de outbox e de `PENDING_REFERENCE`; health do SQS.
+- **Testes com SQS real e com 3 processos reais** (seção 10.7), incluindo um processo morto com `SIGKILL`.
+- **Infra local**: `docker-compose.yml` com PostgreSQL 17 e LocalStack 3.8.1 (somente SQS), e as três filas
+  criadas por `docker/localstack/init-sqs.sh`.
 
 ### Pendente
 
-Consumer e publisher SQS (e o health check do SQS no `/health/ready`), agendamento dos workers
-(`PENDING_REFERENCE` e outbox), métrica de DLQ, testes com SQS real e com 3 ou mais processos.
+`README.md` de setup, teste de carga opcional e autenticação com IdP (seção 14).
 
 ## 5. Modelo de domínio
 
@@ -142,7 +144,7 @@ Value object imutável. Decisões:
   `"-0.00"`. O construtor normaliza `-0` para `0`.
 - **Moedas diferentes**: `add`, `subtract` e `isLessThan` lançam `CurrencyMismatchError`. `equals` retorna
   `false`, pois uma comparação de igualdade não deve lançar erro.
-- **Persistência (planejado)**: colunas `numeric(20,2)` + `char(3)`, lidas e gravadas como **string**, nunca
+- **Persistência**: colunas `numeric(20,2)` + `char(3)`, lidas e gravadas como **string**, nunca
   como `number`.
 
 ### 5.2 Wallet (aggregate root)
@@ -156,7 +158,7 @@ Value object imutável. Decisões:
 - `version` incrementa **somente** quando o saldo muda, e `updatedAt` acompanha.
 - Saldo nunca fica negativo: `debit` lança `InsufficientFundsError`. O use case traduz o erro para o
   `FailureCode` correto.
-- A unicidade `playerId + currency` e a não-negatividade também serão garantidas no banco **(planejado)**.
+- A unicidade `playerId + currency` e a não-negatividade também são garantidas no banco (seção 7.5).
 
 ### 5.3 WalletLedgerEntry (imutável)
 
@@ -211,7 +213,7 @@ A referência é resolvida por `(providerId, referenceExternalTransactionId)`. `
 
 Também valida mesmo provider, player, wallet, moeda e rodada; que a referência esteja `PROCESSED`; e, em
 `REFUND`/`ROLLBACK`, que o valor seja **igual** ao da referência. A checagem de "já revertida" exige consulta e
-fica no use case, reforçada por um índice único parcial por `(referenceTransactionId, kind)` **(planejado)**.
+fica no use case, reforçada por um índice único parcial por `(referenceTransactionId, kind)`.
 
 **Referência fora de ordem**
 
@@ -246,7 +248,7 @@ desiste:
 ### 5.6 Inbox e Outbox
 
 - `InboxMessage`: `receive()` valida `messageId` e `consumerName`; `markProcessed()` lança erro se já processada.
-  A deduplicação será pela chave `(consumerName, messageId)` no banco **(planejado)**.
+  A deduplicação é pela chave `(consumerName, messageId)` no banco.
 - `OutboxMessage`: `enqueue(event)` copia o envelope (`event.toJSON()`) e usa o **`eventId` como id**, então
   reenfileirar o mesmo evento não cria uma segunda linha. `isDue(now)` considera `nextAttemptAt`;
   `scheduleRetry(now)` incrementa `attempts` e aplica backoff; `markPublished(at)` encerra o ciclo e lança erro
@@ -619,7 +621,107 @@ implementação `NoopAuthGuard`. O desenho adotado seria:
 Os rótulos de rota usam o padrão (`/wallets/:walletId`), nunca o caminho cru, e rotas inexistentes viram
 `unmatched`: a cardinalidade fica limitada mesmo sob varredura de URLs.
 
-## 10. Interpretações adicionais do enunciado
+## 10. Mensageria (SQS) e workers
+
+### 10.1 Filas
+
+| Fila | Papel |
+|---|---|
+| `wager-transactions.fifo` | entrada: mensagens `WagerTransactionRequested` dos provedores |
+| `wager-transactions-dlq.fifo` | mensagens que o consumer não consegue ou não deve processar |
+| `wager-events.fifo` | saída: eventos de integração publicados pela outbox |
+
+A mensagem de entrada segue o contrato do enunciado (`messageId`, `type`, `occurredAt`, `data`) e passa pelo
+mesmo schema estrito da API HTTP, além de `idempotencyKey` e `messageId`. O `MessageGroupId` esperado é o
+`walletId`: a ordenação do FIFO por wallet é uma **otimização**, não a garantia (que vem do banco).
+
+### 10.2 Consumer
+
+Long polling em lote. Mensagens do mesmo grupo são processadas em sequência e grupos diferentes em paralelo. O
+consumer chama o **mesmo `SubmitWagerTransaction`** do HTTP, com `source = (wager-transactions, messageId)`,
+então a inbox, a transação financeira, o ledger e a outbox confirmam juntos. O `ack` (`DeleteMessage`) só
+acontece **depois** do commit.
+
+| Resultado | Ação |
+|---|---|
+| Processada: inclui replay, rejeição de negócio (`422` no HTTP) e `PENDING_REFERENCE` | `ack` |
+| Corpo que não é JSON ou viola o schema | DLQ, motivo `MALFORMED` |
+| Dinheiro ou transação inválidos | DLQ, motivo `INVALID` |
+| Chave de idempotência reutilizada com conteúdo diferente | DLQ, motivo `CONFLICT` |
+| Falha transitória ou erro desconhecido | **retry** com backoff (`ChangeMessageVisibility`): 5s, 10s, 20s... até 300s |
+| Falha que persiste até `SQS_MAX_ATTEMPTS` (padrão 5) | DLQ, motivo `RETRIES_EXHAUSTED` |
+
+Uma rejeição de negócio (ex.: saldo insuficiente) é uma **resposta final**, não uma falha: vai para o `ack`, e o
+resultado fica na transação. Só o que nunca vai dar certo (malformado, inválido, conflito) vai para a DLQ de
+imediato. A mensagem na DLQ preserva o corpo original e os atributos `deadLetterReason`, `originalMessageId` e
+`receiveCount`. Erros desconhecidos são tratados como transitórios, com limite de tentativas, para nada se perder
+em silêncio.
+
+Janelas de falha cobertas: se o processo morre **depois do commit e antes do `ack`**, a mensagem volta após o
+visibility timeout, cai no caminho de replay e é confirmada sem novo efeito; se morre **antes do commit**, nada foi
+gravado e a reentrega processa normalmente.
+
+### 10.3 Encerramento
+
+O `stop()` do consumer **não aborta** o long-poll em andamento: abortar a requisição no cliente não a cancela no
+servidor, e a próxima mensagem que chegasse seria entregue a uma conexão morta e ficaria invisível até o
+visibility timeout (o teste de integração reproduziu exatamente isso). Em vez disso, o consumer termina a
+mensagem em processamento, **libera** (`VisibilityTimeout = 0`) as que o poll devolver e as que ainda não
+começaram, e para. O custo é esperar até `SQS_WAIT_TIME_SECONDS`.
+
+### 10.4 Publicação de eventos
+
+`PublishOutbox` envia cada mensagem da outbox ao `wager-events.fifo`, com `MessageDeduplicationId = eventId`,
+`MessageGroupId = walletId` e os atributos `eventType`, `eventId` e `correlationId`. A entrega é *at-least-once*:
+se o processo morre depois do SQS aceitar e antes do commit, outro publisher reenvia. A deduplicação do FIFO
+(janela de 5 minutos) remove esse duplicado na fila, mas **não é a garantia**: o consumidor deve deduplicar pelo
+`eventId`.
+
+### 10.5 Workers
+
+Dois laços periódicos (`PeriodicTask`), em todas as instâncias: o publisher da outbox e o reprocessamento de
+`PENDING_REFERENCE`. Cada um nunca se sobrepõe a si mesmo, repete imediatamente quando o lote veio cheio, espera o
+intervalo quando não há mais trabalho, e uma falha de tick é registrada e contada sem derrubar o laço. Como ambos
+usam `FOR UPDATE SKIP LOCKED`, várias instâncias dividem o trabalho sem coordenação. `WORKERS_ENABLED=false` e
+`SQS_CONSUMER_ENABLED=false` permitem separar papéis (por exemplo, instâncias só de HTTP).
+
+### 10.6 Variáveis e métricas
+
+| Variável | Padrão |
+|---|---|
+| `SQS_QUEUE_URL`, `SQS_DLQ_URL`, `SQS_EVENTS_QUEUE_URL` | obrigatórias |
+| `AWS_REGION` / `AWS_ENDPOINT_URL` | `us-east-1` / opcional (LocalStack) |
+| `SQS_CONSUMER_ENABLED` | `true` |
+| `SQS_MAX_MESSAGES` / `SQS_WAIT_TIME_SECONDS` | `10` / `20` |
+| `SQS_MAX_ATTEMPTS` | `5` (precisa ser ≤ `maxReceiveCount` da fila) |
+| `SQS_RETRY_BASE_SECONDS` / `SQS_RETRY_MAX_SECONDS` | `5` / `300` |
+| `WORKERS_ENABLED` | `true` |
+| `OUTBOX_INTERVAL_MS` / `OUTBOX_BATCH_SIZE` | `1000` / `50` |
+| `PENDING_REFERENCE_INTERVAL_MS` / `PENDING_REFERENCE_BATCH_SIZE` | `5000` / `50` |
+
+Métricas: `sqs_messages_total{outcome}` (`processed`, `retry`, `dead_letter`, `released`),
+`sqs_dlq_messages_total{reason}`, `sqs_retries_total`, `sqs_malformed_messages_total{cause}`,
+`sqs_receive_errors_total`, `sqs_message_processing_seconds`, `worker_ticks_total{task}` e
+`worker_failures_total{task}`. O `/health/ready` inclui o `sqs` (acessibilidade das filas de entrada e de eventos).
+
+### 10.7 Testes
+
+- **Unitários:** política de desfecho, `WagerMessageHandler` (cada ramo da tabela 10.2) e `PeriodicTask`.
+- **Integração com LocalStack e PostgreSQL reais** (`test:integration`): consumo e `ack` após o commit; mesma
+  mensagem enviada 3 vezes com efeito único; **worker morto depois do commit e antes do `ack`**; rejeição de
+  negócio com `ack`; cada motivo de DLQ; **retry com o banco fora e recuperação**; esgotamento de tentativas;
+  encerramento que libera mensagens e um segundo consumer concluindo o trabalho exatamente uma vez; 3 consumers
+  dividindo 60 mensagens; *hot wallet* com 80 mensagens sobre 50,00; publicação da outbox e publisher morto após
+  o envio; health do SQS.
+- **e2e com o app completo** (consumer e workers ligados): mensagem vira saldo e eventos; referência fora de
+  ordem resolvida pelo worker; mensagem envenenada sem travar o serviço; readiness e métricas; shutdown rápido.
+- **e2e com 3 processos reais** (`bun src/main.ts`, mesmo PostgreSQL e mesma fila): *hot wallet* alimentada por
+  HTTP nas 3 instâncias e por SQS ao mesmo tempo (250 apostas de 1,00 sobre 100,00: exatamente 100 aceitas e 150
+  rejeitadas, saldo 0,00); a mesma `BET` 70 vezes por HTTP e SQS com 1 débito; **um processo morto com `SIGKILL`
+  no meio do processamento**, 300 mensagens aplicadas exatamente uma vez pelos sobreviventes e reinício
+  saudável; todos os eventos entregues uma única vez na fila.
+
+## 11. Interpretações adicionais do enunciado
 
 O enunciado pede que interpretações adicionais sejam documentadas:
 
@@ -632,10 +734,11 @@ O enunciado pede que interpretações adicionais sejam documentadas:
   conflito (`EXTERNAL_ID_REUSED`), não replay: o header é a fonte da verdade.
 - O replay de uma transação devolve seu **estado atual** (ex.: uma `PENDING_REFERENCE` já resolvida volta como
   `PROCESSED`), sempre com o saldo observado quando o resultado foi decidido.
-- `maxReceiveCount` da fila ainda é provisório (seção 11).
+- Os eventos de integração saem por uma terceira fila FIFO, `wager-events.fifo`: o enunciado lista apenas a fila
+  de entrada e a DLQ, e não diz para onde a outbox publica.
 - O `LOG_LEVEL` padrão em `test` é `error`, para a saída dos testes ficar limpa.
 
-## 11. Infraestrutura local
+## 12. Infraestrutura local
 
 ```bash
 docker compose up -d
@@ -647,30 +750,31 @@ docker compose up -d
 | `localstack` | `localstack/localstack:3.8.1` | 4566 |
 
 - A versão do LocalStack está **fixa**: as tags mais recentes exigem `LOCALSTACK_AUTH_TOKEN`.
-- `maxReceiveCount=5` na redrive policy da fila principal é um valor inicial, a revisar junto com a política de
-  retry.
-- As filas usam `ContentBasedDeduplication=true` por conveniência em dev. **A garantia de idempotência vem da
-  inbox no banco**, não do SQS FIFO (restrição inviolável nº 3 do enunciado).
+- Filas criadas por `docker/localstack/init-sqs.sh` (seção 10.1). `maxReceiveCount=5` na redrive policy da fila
+  principal; o `SQS_MAX_ATTEMPTS` da aplicação não pode passar disso.
+- As filas de requisições usam `ContentBasedDeduplication=true` por conveniência em dev. **A garantia de
+  idempotência vem da inbox e da chave no banco**, não do SQS FIFO (restrição inviolável nº 3 do enunciado).
 - Variáveis de ambiente: ver `.env.example`.
 
-## 12. Como trabalhamos
+## 13. Como trabalhamos
 
 - **Commits** em inglês, no padrão Conventional Commits (`feat`, `fix`, `test`, `docs`, `build`, `chore`,
   `style`), pequenos e focados, um arquivo por commit.
 - **Qualidade antes de commitar**: `prettier`, `oxlint`, `tsc --noEmit`, `vitest` e `test:integration` limpos.
-- **Testes** unitários acompanham cada classe de domínio e cada use case. Integração e concorrência usarão PostgreSQL e SQS
-  reais em containers, como pede o enunciado.
-- **Invariantes no banco**: unicidade, imutabilidade do ledger e não-negatividade do saldo serão aplicadas por
+- **Testes** unitários acompanham cada classe de domínio e cada use case. Integração, e2e e concorrência rodam
+  contra PostgreSQL e SQS (LocalStack) reais em containers, como pede o enunciado, nunca contra mocks.
+- **Invariantes no banco**: unicidade, imutabilidade do ledger e não-negatividade do saldo são aplicadas por
   constraints e triggers nas migrations, não só em código.
 
-## 13. Decisões em aberto
+## 14. Pendências
 
 | Tema | Situação |
 |---|---|
-| Política de retry do consumer SQS e `maxReceiveCount` | a definir com o consumer: backoff para erros transitórios, DLQ para permanentes |
-| Intervalos e tamanhos de lote dos workers (`PENDING_REFERENCE`, outbox) | a definir com o agendador |
+| Teste de carga (diferencial opcional) | não implementado; se feito, exposto como `bun run test:load` |
+| Autenticação com IdP | não implementada (seção 9.4); o ponto de extensão existe |
+| Guia de setup no `README.md` | pendente (o `README.md` atual é o enunciado do desafio) |
 
-## 14. Limitações conhecidas
+## 15. Limitações conhecidas
 
 - `/metrics` e `/health/*` não exigem autenticação e devem ficar em rede interna (ou atrás de regra no
   gateway). O `/metrics` expõe nomes de rota e contagens, nunca dados de jogador.
@@ -684,9 +788,16 @@ docker compose up -d
 - Os testes unitários dos use cases usam fakes em memória que **serializam** as unidades de trabalho e não têm
   rollback: provam a lógica, não a concorrência nem a atomicidade. Isso é provado pelos testes de integração
   contra PostgreSQL real (seção 7.7).
-- A concorrência foi exercitada com muitas requisições paralelas **dentro de um processo** (pool de 20
-  conexões, cada unidade de trabalho em sua própria conexão e transação). O teste com **3 ou mais processos**
-  separados depende dos entrypoints (HTTP, consumer e workers) e ainda não existe.
+- Os testes de concorrência cobrem dois níveis: muitas requisições paralelas dentro de um processo (cada
+  unidade de trabalho em sua própria conexão e transação) e **3 processos reais** do serviço (seção 10.7). Não
+  há teste de carga (`test:load`), que o enunciado trata como diferencial opcional.
+- O `SQS_MAX_ATTEMPTS` precisa ser **menor ou igual** ao `maxReceiveCount` da redrive policy da fila (5). Se for
+  maior, o SQS move a mensagem para a DLQ por conta própria, sem o atributo `deadLetterReason`. O serviço não
+  confere isso na subida.
+- Não há ferramenta de reprocessamento da DLQ: as mensagens ficam preservadas com o corpo original e o motivo,
+  para inspeção e reenvio manual.
+- O encerramento do consumer espera até `SQS_WAIT_TIME_SECONDS` (o long-poll em andamento) e libera o que ele
+  devolver (seção 10.3); `SHUTDOWN_TIMEOUT_MS` precisa ser maior que esse tempo.
 - Não há retry automático de erros transitórios do banco (deadlock `40P01`, falha de serialização `40001`,
   conexão perdida): hoje o erro sobe ao chamador. O desenho evita deadlocks (a ordem é sempre: linha da
   transação, depois wallet), mas a política de retry pertence aos adapters de entrada.
