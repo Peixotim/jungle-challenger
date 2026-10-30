@@ -48,6 +48,11 @@ export class EnvReader {
     return value;
   }
 
+  optionalUrl(name: string, protocols: readonly string[]): string | undefined {
+    if (this.raw(name) === undefined) return undefined;
+    return this.requiredUrl(name, protocols);
+  }
+
   integer(name: string, options: NumberOptions): number {
     const value = this.raw(name);
     if (value === undefined) return options.default;
