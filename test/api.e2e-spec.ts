@@ -8,6 +8,7 @@ import {
   testDatabaseUrl,
 } from './integration/support/database.js';
 import { startApp } from './support/start-app.js';
+import { applicationTestEnv } from './support/test-env.js';
 import { startTcpProxy } from './support/tcp-proxy.js';
 
 const money = (amount: string) => ({ amount, currency: 'BRL' });
@@ -29,12 +30,7 @@ describe('HTTP API (e2e)', () => {
 
   beforeEach(async () => {
     await db.reset();
-    process.env = {
-      ...originalEnv,
-      NODE_ENV: 'test',
-      LOG_LEVEL: 'error',
-      DATABASE_URL: testDatabaseUrl(),
-    };
+    process.env = { ...originalEnv, ...applicationTestEnv(testDatabaseUrl()) };
     app = await startApp();
   });
 
