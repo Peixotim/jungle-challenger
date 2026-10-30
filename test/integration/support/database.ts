@@ -18,14 +18,18 @@ export interface TestDatabase {
   close(): Promise<void>;
 }
 
-async function ensureDatabase(url: string): Promise<void> {
-  const target = new URL(url);
-  const name = target.pathname.slice(1);
+function assertTestDatabase(url: string): string {
+  const name = new URL(url).pathname.slice(1);
   if (!/^[a-z0-9_]+$/i.test(name) || !name.endsWith('_test')) {
     throw new Error(
       `refusing to run destructive integration tests on database "${name}": its name must end with _test`,
     );
   }
+  return name;
+}
+
+async function ensureDatabase(url: string): Promise<void> {
+  const name = assertTestDatabase(url);
   const admin = new URL(url);
   admin.pathname = '/postgres';
 
@@ -46,9 +50,13 @@ async function ensureDatabase(url: string): Promise<void> {
   }
 }
 
-export async function connectTestDatabase(): Promise<TestDatabase> {
-  const url = testDatabaseUrl();
-  await ensureDatabase(url);
+export async function connectTestDatabase(url?: string): Promise<TestDatabase> {
+  if (url === undefined) {
+    url = testDatabaseUrl();
+    await ensureDatabase(url);
+  } else {
+    assertTestDatabase(url);
+  }
   const orm = await MikroORM.init(createOrmConfig(url));
   const uow = new MikroOrmUnitOfWork(orm.em);
   return {
