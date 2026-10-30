@@ -73,10 +73,10 @@ function settleBet(fleet) {
     money: money('2.00'),
     referenceExternalTransactionId: bet.body.externalTransactionId,
   });
-  send(body, [200, 202, 422], kind);
+  send(body, [200], kind);
 }
 
-// 202 and 422 are accepted: the reference may still be pending or already reversed.
+// Each bet is settled or reversed once and was processed (200), so 200 is the only correct answer.
 function reverseBet(fleet) {
   const bet = openBets.pop();
   if (!bet) return placeBet(fleet);
@@ -87,7 +87,7 @@ function reverseBet(fleet) {
     money: bet.body.money,
     referenceExternalTransactionId: bet.body.externalTransactionId,
   });
-  send(body, [200, 202, 422], kind);
+  send(body, [200], kind);
 }
 
 function read(fleet) {

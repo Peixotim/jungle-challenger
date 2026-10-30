@@ -13,6 +13,7 @@ import {
   submitRequest,
   wagerBody,
 } from '../lib/api.js';
+import { assertReconciled } from '../lib/integrity.js';
 import { idempotencyHttp } from '../lib/thresholds.js';
 
 const COPIES = 25;
@@ -22,6 +23,9 @@ const SAME_PAYLOAD_ITERATIONS = 200;
 const BREAK = __ENV.BREAK_IDEMPOTENCY === '1';
 
 export const options = {
+  // http.batch defaults to 6 parallel requests per host; all copies must be in flight together.
+  batch: COPIES,
+  batchPerHost: COPIES,
   scenarios: {
     samePayload: {
       executor: 'shared-iterations',
@@ -87,6 +91,7 @@ export function samePayload() {
   check(debits, { 'exactly one debit in the ledger': (d) => d.length === 1 });
   const balance = getWallet(wallet.id).body.balance.amount;
   check(balance, { 'balance reflects a single bet': (b) => Number(b) === 990 });
+  assertReconciled([wallet.id]);
 }
 
 export function divergentSerial() {
@@ -101,6 +106,7 @@ export function divergentSerial() {
       first.status === 200 && first.json('idempotentReplay') === false,
     'same key with another payload is 409': () => conflicting.status === 409,
   });
+  assertReconciled([wallet.id]);
 }
 
 export function divergentConcurrent() {
@@ -123,6 +129,7 @@ export function divergentConcurrent() {
   });
   const debits = getLedger(wallet.id).filter((e) => e.direction === 'DEBIT');
   check(debits, { 'exactly one debit in the ledger': (d) => d.length === 1 });
+  assertReconciled([wallet.id]);
 }
 
 export function externalIdReused() {
@@ -135,6 +142,7 @@ export function externalIdReused() {
     'original bet processed': () => first.status === 200,
     'same external id under another key is 409': () => reused.status === 409,
   });
+  assertReconciled([wallet.id]);
 }
 
 export function teardown(data) {

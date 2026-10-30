@@ -52,6 +52,7 @@ export const contention = {
 export const idempotencyHttp = {
   http_req_failed: ['rate==0'],
   checks: ['rate==1'],
+  ...integrityThreshold,
 };
 
 export const sqsBurst = {
