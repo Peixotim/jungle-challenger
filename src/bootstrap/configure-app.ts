@@ -1,5 +1,6 @@
 import type { Server } from 'node:http';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { SwaggerModule } from '@nestjs/swagger';
 import type { AppConfig } from '../config/app-config.js';
 import { Logger } from '../application/ports/Logger.js';
 import { Metrics } from '../application/ports/Metrics.js';
@@ -8,6 +9,7 @@ import {
   jsonBodyErrorHandler,
   jsonBodyParser,
 } from '../interface/http/middleware/json-body.middleware.js';
+import { buildOpenApiDocument } from '../interface/http/openapi/openapi-document.js';
 import { requestContextMiddleware } from '../interface/http/middleware/request-context.middleware.js';
 import { securityHeadersMiddleware } from '../interface/http/middleware/security-headers.middleware.js';
 
@@ -25,6 +27,10 @@ export function configureApp(
   app.use(accessLogMiddleware(logger, metrics));
   app.use(jsonBodyParser(config.http.bodyLimit));
   app.use(jsonBodyErrorHandler);
+
+  if (config.http.docsEnabled) {
+    SwaggerModule.setup('docs', app, buildOpenApiDocument());
+  }
 
   const server = app.getHttpServer() as Server;
   server.keepAliveTimeout = config.http.keepAliveTimeoutMs;

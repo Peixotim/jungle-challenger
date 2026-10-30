@@ -17,6 +17,7 @@ export interface AppConfig {
     port: number;
     bodyLimit: string;
     trustProxy: boolean | number;
+    docsEnabled: boolean;
     keepAliveTimeoutMs: number;
     headersTimeoutMs: number;
     requestTimeoutMs: number;
@@ -75,6 +76,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         'must look like 100kb, 1mb or 512b',
       ),
       trustProxy: reader.trustProxy('HTTP_TRUST_PROXY'),
+      docsEnabled: reader.boolean('DOCS_ENABLED', environment !== 'production'),
       keepAliveTimeoutMs: reader.integer('HTTP_KEEP_ALIVE_TIMEOUT_MS', {
         default: 65_000,
         min: 1_000,
@@ -198,6 +200,7 @@ export function describeConfig(config: AppConfig): Record<string, unknown> {
       host: config.http.host,
       port: config.http.port,
       trustProxy: config.http.trustProxy,
+      docsEnabled: config.http.docsEnabled,
     },
     database: {
       url: database.toString(),

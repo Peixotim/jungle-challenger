@@ -19,6 +19,9 @@ bun run start:bun          # sobe o serviço em http://localhost:8080
 Em outro terminal: `curl http://localhost:8080/health/ready`. Para rodar os testes: `bun run test`,
 `bun run test:integration` e `bun run test:e2e` (seção 4).
 
+Documentação interativa (Swagger UI): http://localhost:8080/docs, com o JSON OpenAPI em `/docs-json`. Dá para criar
+carteiras e enviar transações direto por ali ("Try it out"). Fica ligada por padrão e desligada em `NODE_ENV=production`;
+`DOCS_ENABLED=true|false` sobrescreve.
 Testes de carga (k6): veja [LOAD.md](./LOAD.md).
 
 ## 1. Pré-requisitos
