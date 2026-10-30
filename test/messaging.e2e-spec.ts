@@ -36,6 +36,7 @@ describe('messaging pipeline with consumer and workers enabled (e2e)', () => {
   });
 
   afterAll(async () => {
+    await purgeAll(sqs);
     await db.close();
   });
 
