@@ -4,6 +4,8 @@ import { Logger } from '../../../application/ports/Logger.js';
 import { requestContext } from '../../../infrastructure/observability/request-context.js';
 import { toProblem } from '../problem.js';
 
+const RETRY_AFTER_SECONDS = '1';
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   constructor(@Inject(Logger) private readonly logger: Logger) {}
@@ -19,10 +21,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
         method: request.method,
         path: request.path,
         status: problem.status,
+        code: problem.code,
         err: exception,
       });
     }
     if (response.headersSent) return;
+    if (problem.status === 503)
+      response.setHeader('Retry-After', RETRY_AFTER_SECONDS);
     response
       .status(problem.status)
       .type('application/problem+json')
