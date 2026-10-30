@@ -4,6 +4,9 @@ import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/Mikr
 
 const DEFAULT_URL = 'postgresql://jungle:jungle@localhost:5432/jungle_test';
 
+export const testDatabaseUrl = (): string =>
+  process.env.TEST_DATABASE_URL ?? DEFAULT_URL;
+
 export interface TestDatabase {
   orm: MikroORM;
   uow: MikroOrmUnitOfWork;
@@ -44,7 +47,7 @@ async function ensureDatabase(url: string): Promise<void> {
 }
 
 export async function connectTestDatabase(): Promise<TestDatabase> {
-  const url = process.env.TEST_DATABASE_URL ?? DEFAULT_URL;
+  const url = testDatabaseUrl();
   await ensureDatabase(url);
   const orm = await MikroORM.init(createOrmConfig(url));
   const uow = new MikroOrmUnitOfWork(orm.em);
