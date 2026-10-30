@@ -7,7 +7,10 @@ export interface OpenWalletProps {
   playerId: string;
   initialBalance: Money;
   now: Date;
-  opening?: { entryId: string; transactionId: string };
+  opening?: {
+    entryId: string;
+    transactionId: string;
+  };
 }
 
 export interface OpenedWallet {
