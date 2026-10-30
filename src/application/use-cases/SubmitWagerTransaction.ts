@@ -8,6 +8,7 @@ import { computePayloadHash } from '../idempotency/payload-hash.js';
 import { toSubmitResult } from '../mappers/views.js';
 import { Clock } from '../ports/Clock.js';
 import { IdGenerator } from '../ports/IdGenerator.js';
+import { Metrics } from '../ports/Metrics.js';
 import { TransactionalContext, UnitOfWork } from '../ports/UnitOfWork.js';
 import { WagerTransactionProcessor } from '../services/WagerTransactionProcessor.js';
 
@@ -17,11 +18,13 @@ export class SubmitWagerTransaction {
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly processor: WagerTransactionProcessor,
+    private readonly metrics: Metrics,
   ) {}
 
   async execute(
     cmd: SubmitWagerTransactionCommand,
   ): Promise<SubmitWagerTransactionResult> {
+    const startedAt = this.clock.now();
     const money = Money.from(cmd.money);
     const candidate = WagerTransaction.create({
       id: this.ids.next(),
@@ -39,19 +42,42 @@ export class SubmitWagerTransaction {
       createdAt: this.clock.now(),
     });
 
-    return this.uow.run(async (ctx) => {
+    const result = await this.uow.run(async (ctx) => {
       const inbox = cmd.source
         ? await this.receive(ctx, cmd.source, candidate.payloadHash)
         : undefined;
 
-      const result = await this.submit(ctx, candidate, cmd);
+      const outcome = await this.submit(ctx, candidate, cmd);
 
       if (inbox) {
         inbox.markProcessed(this.clock.now());
         await ctx.inbox.markProcessed(inbox);
       }
-      return result;
+      return outcome;
     });
+
+    this.record(candidate.kind, result, startedAt);
+    return result;
+  }
+
+  private record(
+    kind: string,
+    result: SubmitWagerTransactionResult,
+    startedAt: Date,
+  ): void {
+    if (result.idempotentReplay) {
+      this.metrics.increment('wager_duplicates_total', { kind });
+    } else {
+      this.metrics.increment('wager_transactions_total', {
+        kind,
+        status: result.status,
+      });
+    }
+    this.metrics.observe(
+      'wager_processing_seconds',
+      (this.clock.now().getTime() - startedAt.getTime()) / 1000,
+      { kind },
+    );
   }
 
   private async receive(
@@ -88,12 +114,18 @@ export class SubmitWagerTransaction {
     candidate: WagerTransaction,
   ): SubmitWagerTransactionResult {
     if (stored.idempotencyKey !== candidate.idempotencyKey) {
+      this.metrics.increment('wager_idempotency_conflicts_total', {
+        reason: 'EXTERNAL_ID_REUSED',
+      });
       throw new IdempotencyConflictError(
         'EXTERNAL_ID_REUSED',
         candidate.idempotencyKey,
       );
     }
     if (!stored.matchesPayload(candidate.payloadHash)) {
+      this.metrics.increment('wager_idempotency_conflicts_total', {
+        reason: 'PAYLOAD_MISMATCH',
+      });
       throw new IdempotencyConflictError(
         'PAYLOAD_MISMATCH',
         candidate.idempotencyKey,
