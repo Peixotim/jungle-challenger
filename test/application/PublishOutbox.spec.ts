@@ -6,7 +6,13 @@ function setup(batchSize?: number) {
   const h = harness({ balance: '1000.00' });
   return {
     ...h,
-    submit: new SubmitWagerTransaction(h.db.uow, h.clock, h.ids, h.processor),
+    submit: new SubmitWagerTransaction(
+      h.db.uow,
+      h.clock,
+      h.ids,
+      h.processor,
+      h.metrics,
+    ),
     publish: new PublishOutbox(
       h.db.uow,
       h.publisher,
@@ -102,7 +108,9 @@ describe('PublishOutbox', () => {
 
     await publish.execute();
 
-    expect(metrics.observations).toEqual([
+    expect(
+      metrics.observations.filter((o) => o.name === 'outbox_lag_seconds'),
+    ).toEqual([
       { name: 'outbox_lag_seconds', value: 5 },
       { name: 'outbox_lag_seconds', value: 5 },
     ]);
