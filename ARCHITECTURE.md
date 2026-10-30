@@ -65,8 +65,9 @@ src/
 │   ├── system/        SystemClock, UuidV7Generator
 │   └── (planejado)    messaging/sqs/, auth/
 ├── interface/
-│   ├── http/          middleware/, filters/, problem (controllers: planejado)
-│   └── (planejado)    sqs/, workers/, health/
+│   ├── http/          controllers/, validation/ (Zod), middleware/, filters/, auth/, presenters/,
+│   │                  problem e error-mapping
+│   └── (planejado)    sqs/, workers/
 ├── modules/           módulos NestJS que compõem as camadas (composição)
 ├── config/            configuração tipada, validada e carregada do ambiente
 ├── bootstrap/         configure-app e encerramento gracioso
@@ -105,18 +106,22 @@ de DDD), mas não carregam decorators nem imports de persistência.
 - **Bootstrap e operação** (seção 8): configuração validada, `main.ts` e `AppModule` completos, logs JSON com
   correlation id, métricas Prometheus, erros `problem+json`, verificação de migrations no start e encerramento
   gracioso.
-- **Testes unitários** de todas as classes de domínio, de todos os use cases e da camada de bootstrap (Vitest).
+- **API HTTP** (seção 9): todos os endpoints do enunciado, validação estrita, mapeamento único de status,
+  `/health/live`, `/health/ready` e `/metrics`.
+- **Testes unitários** de todas as classes de domínio, de todos os use cases e das camadas de bootstrap e HTTP (Vitest).
 - **Testes de integração** contra PostgreSQL real: migrations, constraints, idempotência, concorrência,
   atomicidade, referências fora de ordem e outbox.
-- **Teste e2e** que sobe o `AppModule` inteiro contra o banco real (`bun run test:e2e`).
+- **Testes e2e** (`bun run test:e2e`) que sobem o `AppModule` inteiro contra o banco real e exercitam a API por
+  HTTP: contratos, status, idempotência concorrente, saldo, rejeições, métricas, readiness e uma queda real do
+  banco (um proxy TCP entre o app e o PostgreSQL é cortado e restaurado; a API responde `503` e se recupera).
 - **Infra local**: `docker-compose.yml` com PostgreSQL 17 e LocalStack 3.8.1 (somente SQS).
 - **Filas SQS**: `wager-transactions.fifo` e `wager-transactions-dlq.fifo` criadas por
   `docker/localstack/init-sqs.sh`.
 
 ### Pendente
 
-Controllers da API HTTP (com validação de entrada e mapeamento dos erros de negócio para status), `/health` e
-`/metrics`, consumer e publisher SQS, agendamento dos workers, testes com SQS real e com 3 ou mais processos.
+Consumer e publisher SQS (e o health check do SQS no `/health/ready`), agendamento dos workers
+(`PENDING_REFERENCE` e outbox), métrica de DLQ, testes com SQS real e com 3 ou mais processos.
 
 ## 5. Modelo de domínio
 
@@ -536,7 +541,85 @@ bun run start:bun          # Bun
 bun run build && bun run start:prod   # Node, a partir de dist/
 ```
 
-## 9. Interpretações adicionais do enunciado
+## 9. API HTTP
+
+### 9.1 Endpoints
+
+| Método e caminho | Papel | Sucesso |
+|---|---|---|
+| `POST /wallets` | cria a wallet (saldo inicial positivo gera `OPENING`) | `201` |
+| `GET /wallets/:walletId` | consulta | `200` |
+| `GET /wallets/:walletId/ledger?cursor=&limit=` | extrato paginado por cursor opaco (`limit` 1 a 200, padrão 50) | `200` |
+| `POST /wallets/:walletId/reconciliation` | compara saldo e ledger, sem corrigir | `200` |
+| `POST /wagering/transactions` | submete uma operação (header `Idempotency-Key`) | `200`, `202` ou `422` |
+| `GET /wagering/transactions/:transactionId` | consulta pelo id interno | `200` |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | consulta pelo id do provedor | `200` |
+| `GET /health/live`, `GET /health/ready` | probes | `200` ou `503` |
+| `GET /metrics` | métricas Prometheus | `200` |
+
+### 9.2 Mapeamento de status
+
+O mapeamento é único para todos os endpoints (um só filtro de exceções mais o status do resultado de
+`POST /wagering/transactions`), então o provedor decide reenviar, corrigir ou desistir sem interpretar mensagens:
+
+| Situação | Status | `code` | O que o provedor faz |
+|---|---|---|---|
+| Operação aplicada (inclui replay) | `200` | | segue em frente |
+| Aceita, aguardando a referência | `202` | corpo traz `status: PENDING_REFERENCE` | aguarda; consulta o status depois |
+| Rejeição de negócio | `422` | corpo traz `status: REJECTED` e `failureCode` | **não reenvia**; age conforme o `failureCode` (seção 5.5) |
+| Payload ou parâmetro inválido | `400` | `VALIDATION_ERROR` (com `errors[].path`), `INVALID_MONEY`, `INVALID_TRANSACTION`, `INVALID_QUERY`, `MALFORMED_JSON` | corrige e reenvia |
+| Conflito de idempotência | `409` | `IDEMPOTENCY_PAYLOAD_MISMATCH`, `IDEMPOTENCY_EXTERNAL_ID_REUSED` | **não reenvia**; é um erro do chamador |
+| Wallet já existente | `409` | `WALLET_ALREADY_EXISTS` | usa a existente |
+| Recurso inexistente | `404` | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `NOT_FOUND` | |
+| Corpo grande demais | `413` | `PAYLOAD_TOO_LARGE` | |
+| Falha transitória de infraestrutura | `503` + `Retry-After: 1` | `TEMPORARILY_UNAVAILABLE` | **reenvia com a mesma `Idempotency-Key`** (seguro) |
+| Erro inesperado | `500` | `INTERNAL_ERROR` | reenvia com a mesma chave; a causa está no log com o `correlationId` |
+
+Falha transitória cobre queda ou recusa de conexão, deadlock, falha de serialização e conflito de lock
+(classificadas por SQLSTATE e por causa encadeada, em `transient-errors.ts`). Um erro de constraint ou de
+programação **não** é tratado como transitório, para o provedor não reenviar em loop algo que nunca vai passar.
+A rejeição `422` é definitiva e **também é devolvida igual no replay**.
+
+### 9.3 Validação de entrada
+
+Schemas Zod **estritos** (`z.strictObject`): propriedade desconhecida é erro, para que um erro de digitação nunca
+desapareça em silêncio. `playerId` e `walletId` são UUID (normalizados para minúsculas); textos têm tamanho
+máximo; `kind` aceita só `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` (`OPENING` é interno e vira `400`). O
+formato do dinheiro (escala, sinal, notação científica) é decidido pelo `Money`, uma única fonte da verdade, e
+volta como `INVALID_MONEY`. O `Idempotency-Key` aceita de 1 a 255 caracteres ASCII imprimíveis, sem espaços.
+
+### 9.4 Autenticação
+
+**Não implementada**, conforme a seção 2 do enunciado (não vale pontos e não compete com o núcleo financeiro).
+O ponto de extensão está explícito: `AuthGuard` (classe abstrata) registrado como `APP_GUARD`, hoje com a
+implementação `NoopAuthGuard`. O desenho adotado seria:
+
+- um IdP externo (Keycloak ou Zitadel, via OIDC) emitindo tokens por provedor, sem tabela de usuários nem hash
+  de senha no serviço;
+- um `AuthGuard` que valida o JWT contra o JWKS do IdP e extrai a identidade do provedor;
+- uma regra de domínio: o `providerId` do token precisa ser igual ao `providerId` do corpo, senão `403`;
+- `/health/*` abertos (probes) e `/metrics` restrito à rede interna;
+- o canal SQS continua tratado como interno e confiável, mas a identidade do provedor na mensagem passa pelas
+  mesmas validações de domínio.
+
+### 9.5 Métricas
+
+| Métrica | Rótulos |
+|---|---|
+| `wager_transactions_total` | `kind`, `status` (somente resultados novos) |
+| `wager_duplicates_total` | `kind` (replays detectados) |
+| `wager_idempotency_conflicts_total` | `reason` |
+| `wager_processing_seconds` (histograma) | `kind` |
+| `wager_reference_retries_total` | `outcome` |
+| `outbox_lag_seconds` (histograma), `outbox_publish_failures_total` | |
+| `wallet_reconciliations_total` | `result` |
+| `db_lock_conflicts_total`, `db_transient_errors_total` | `kind` |
+| `http_requests_total`, `http_request_duration_seconds` | `method`, `route` (padrão da rota, não o caminho), `status` |
+
+Os rótulos de rota usam o padrão (`/wallets/:walletId`), nunca o caminho cru, e rotas inexistentes viram
+`unmatched`: a cardinalidade fica limitada mesmo sob varredura de URLs.
+
+## 10. Interpretações adicionais do enunciado
 
 O enunciado pede que interpretações adicionais sejam documentadas:
 
@@ -549,10 +632,10 @@ O enunciado pede que interpretações adicionais sejam documentadas:
   conflito (`EXTERNAL_ID_REUSED`), não replay: o header é a fonte da verdade.
 - O replay de uma transação devolve seu **estado atual** (ex.: uma `PENDING_REFERENCE` já resolvida volta como
   `PROCESSED`), sempre com o saldo observado quando o resultado foi decidido.
-- `maxReceiveCount` da fila ainda é provisório (seção 10).
+- `maxReceiveCount` da fila ainda é provisório (seção 11).
 - O `LOG_LEVEL` padrão em `test` é `error`, para a saída dos testes ficar limpa.
 
-## 10. Infraestrutura local
+## 11. Infraestrutura local
 
 ```bash
 docker compose up -d
@@ -570,7 +653,7 @@ docker compose up -d
   inbox no banco**, não do SQS FIFO (restrição inviolável nº 3 do enunciado).
 - Variáveis de ambiente: ver `.env.example`.
 
-## 11. Como trabalhamos
+## 12. Como trabalhamos
 
 - **Commits** em inglês, no padrão Conventional Commits (`feat`, `fix`, `test`, `docs`, `build`, `chore`,
   `style`), pequenos e focados, um arquivo por commit.
@@ -580,14 +663,17 @@ docker compose up -d
 - **Invariantes no banco**: unicidade, imutabilidade do ledger e não-negatividade do saldo serão aplicadas por
   constraints e triggers nas migrations, não só em código.
 
-## 12. Decisões em aberto
+## 13. Decisões em aberto
 
 | Tema | Situação |
 |---|---|
-| Mapeamento de status HTTP | a definir (inválido, conflito de idempotência, rejeição de negócio, pendente, falha transitória) |
-| Autenticação | opcional; se não implementada, documentar e deixar ponto de extensão (`AuthPort`) |
+| Política de retry do consumer SQS e `maxReceiveCount` | a definir com o consumer: backoff para erros transitórios, DLQ para permanentes |
+| Intervalos e tamanhos de lote dos workers (`PENDING_REFERENCE`, outbox) | a definir com o agendador |
 
-## 13. Limitações conhecidas
+## 14. Limitações conhecidas
+
+- `/metrics` e `/health/*` não exigem autenticação e devem ficar em rede interna (ou atrás de regra no
+  gateway). O `/metrics` expõe nomes de rota e contagens, nunca dados de jogador.
 
 - O encerramento gracioso é testado com um processo simulado (sinais emitidos em um `EventEmitter`). A entrega
   real de `SIGTERM` não pôde ser verificada no Windows de desenvolvimento e fica para a execução em container
