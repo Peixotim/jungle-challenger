@@ -140,6 +140,7 @@ describe('three real service processes sharing PostgreSQL and SQS (e2e)', () => 
   afterAll(async () => {
     await Promise.all(instances.map((instance) => instance.kill()));
     await setVisibilityTimeout(sqs, QUEUES.requests, 30);
+    await purgeAll(sqs);
     await db.close();
   });
 
