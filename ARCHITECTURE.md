@@ -58,7 +58,10 @@ src/
 │   ├── dtos/          comandos, resultados e views
 │   ├── mappers/       domínio para views
 │   └── errors/        erros de aplicação
-├── infrastructure/    (planejado) persistence/, messaging/sqs/, auth/
+├── infrastructure/
+│   ├── persistence/   mikro-orm.config, UnitOfWork, repositories/, mappers/, migrations/
+│   ├── system/        SystemClock, UuidV7Generator
+│   └── (planejado)    messaging/sqs/, auth/, logging e métricas
 └── interface/         (planejado) http/, sqs/, workers/, health/
 ```
 
@@ -88,15 +91,19 @@ de DDD), mas não carregam decorators nem imports de persistência.
   `InboxMessage`, `OutboxMessage`, `IntegrationEvent` com 4 eventos e a taxonomia de `FailureCode`.
 - **Camada `application`** (seção 6): portas, `SubmitWagerTransaction` (com idempotência), `CreateWallet`,
   `ReprocessPendingReferences`, `PublishOutbox`, `ReconcileWallet` e as consultas.
+- **Persistência** (seção 7): schema com constraints e triggers, migrations reversíveis, Unit of Work e
+  repositórios sobre MikroORM e PostgreSQL.
 - **Testes unitários** de todas as classes de domínio e de todos os use cases (Vitest).
+- **Testes de integração** contra PostgreSQL real: migrations, constraints, idempotência, concorrência,
+  atomicidade, referências fora de ordem e outbox.
 - **Infra local**: `docker-compose.yml` com PostgreSQL 17 e LocalStack 3.8.1 (somente SQS).
 - **Filas SQS**: `wager-transactions.fifo` e `wager-transactions-dlq.fifo` criadas por
   `docker/localstack/init-sqs.sh`.
 
 ### Pendente
 
-Persistência (ORM, schema, migrations, adapters das portas), API HTTP, consumer SQS, agendamento dos workers,
-adapters de log e métricas, `/health`, testes de integração e de concorrência.
+API HTTP, consumer SQS e publisher SQS (adapters das portas restantes), agendamento dos workers, adapters de
+log e métricas, `/health`, testes com SQS real e com 3 ou mais processos.
 
 ## 5. Modelo de domínio
 
@@ -314,7 +321,102 @@ desordenamento normal de um provedor e ainda expõe uma referência realmente pe
   `outbox_publish_failures_total` e `wallet_reconciliations_total`. As demais (transações por status, duplicatas,
   DLQ, conflitos de lock, latência) entram com os adapters.
 
-## 7. Interpretações adicionais do enunciado
+## 7. Persistência
+
+### 7.1 ORM e estratégia transacional
+
+**MikroORM 7 + PostgreSQL.** O ORM entrega o pool de conexões, o `Migrator` e o
+`EntityManager.transactional()`, que é a nossa Unit of Work: cada `UnitOfWork.run` abre **uma** transação SQL
+(em um `fork()` do `EntityManager`, isolamento `READ COMMITTED`) e entrega os repositórios ligados a ela.
+
+**Não há entidades mapeadas.** O domínio não é entidade do ORM (seção 3), e as garantias do desafio dependem de
+construtos SQL que um mapeamento declarativo não expressa: índices únicos parciais, triggers, `ON CONFLICT` e
+`FOR UPDATE SKIP LOCKED`. Os repositórios usam `em.execute` com SQL parametrizado e *mappers* explícitos que
+transformam a linha em objeto de domínio via `rehydrate`. A consequência assumida: não usamos Identity Map nem
+`LockMode`; o lock é um `SELECT ... FOR UPDATE` explícito, mais legível e auditável do que um efeito colateral.
+
+### 7.2 Money no banco
+
+Valor em `numeric(20,2)` e moeda em `char(3)`, em colunas separadas. O driver devolve `numeric` como **string**,
+que entra em `Money.from`; nunca passa por `number`. Os valores gravados vêm de `Money.toJSON().amount`.
+
+### 7.3 Concorrência
+
+A unidade de concorrência é a wallet, e a estratégia é **lock pessimista por linha**: `SELECT ... FOR UPDATE` na
+linha da wallet, nunca um lock global. Justificativa: uma *hot wallet* tem alta chance de conflito, e o
+*optimistic locking* com retry desperdiçaria trabalho (e reexecutaria efeitos) justamente no caso difícil; o lock
+serializa só quem disputa o mesmo saldo e deixa wallets diferentes em paralelo.
+
+Camadas de proteção, da mais externa à mais interna:
+
+1. **Idempotência:** `INSERT ... ON CONFLICT DO NOTHING` na transação decide quem processa (seção 6.3).
+2. **Lock da wallet** antes de ler o saldo. A ordem é sempre *linha da transação, depois wallet*, o que evita
+   deadlock entre unidades de trabalho.
+3. **Versão otimista no `UPDATE`:** `update wallets ... where id = ? and version = ?`; se nenhuma linha for
+   afetada, lança `OptimisticLockError`. Não deveria ocorrer sob o lock; é a rede de segurança contra um bug.
+4. **Constraints e triggers** (7.5): mesmo um escritor errado não consegue corromper o saldo.
+
+### 7.4 Schema
+
+| Tabela | Chaves e unicidade |
+|---|---|
+| `wallets` | PK `id`; **único** `(player_id, currency)`; `balance >= 0`; `version >= 1` |
+| `wager_transactions` | PK `id`; **único** `idempotency_key`; **único** `(provider_id, external_transaction_id)`; índice único parcial `(reference_transaction_id, kind)` para reversões `PROCESSED`; índice parcial para o worker de `PENDING_REFERENCE` |
+| `wallet_ledger_entries` | PK `id`; `seq` identity (ordem estável do cursor); **único** `(wallet_id, transaction_id)` |
+| `inbox_messages` | PK `(consumer_name, message_id)` |
+| `outbox_messages` | PK `id` (o `eventId`); índice parcial das não publicadas |
+
+`wager_transactions.wallet_id` e `player_id` são `text` **sem chave estrangeira** de propósito: são dados do
+provedor, e uma rejeição por wallet inexistente (`WALLET_NOT_FOUND`) precisa ser persistida e auditável.
+
+### 7.5 Garantias aplicadas no banco
+
+| Garantia | Mecanismo |
+|---|---|
+| Não-negatividade | `check (balance >= 0)`; saldos do ledger também |
+| Unicidade | índices e constraints únicos (7.4) |
+| Ledger imutável | trigger recusa `UPDATE`, `DELETE` e `TRUNCATE` em `wallet_ledger_entries` |
+| Lançamento coerente | `check` aritmético: `balance_after = balance_before ± amount` conforme a direção |
+| Encadeamento do ledger | trigger exige `balance_before` igual ao `balance_after` do lançamento anterior da wallet, e a mesma moeda |
+| Saldo = ledger | *constraint trigger* adiada (`DEFERRABLE INITIALLY DEFERRED`) em `wallets` e em `wallet_ledger_entries`: no `COMMIT`, o saldo da wallet precisa igualar o `balance_after` do último lançamento (ou zero, sem lançamentos) |
+| Transação terminal imutável | trigger recusa alterar `PROCESSED`/`REJECTED`/`FAILED`, alterar colunas de identidade e apagar |
+| Estado coerente | `check`s ligando `status` a `processed_at`, `failure_code`, `next_reference_attempt_at` e `reference_transaction_id` |
+
+A checagem *saldo = ledger* compara com o **último** lançamento, não com a soma de todos: o custo é constante, não
+cresce com o histórico. Somada ao encadeamento, ela garante que o saldo é o replay do ledger inteiro.
+
+### 7.6 Migrations
+
+Escritas à mão em SQL, versionadas e **reversíveis** (`up` e `down`), em
+`infrastructure/persistence/migrations/`. A migration 1 cria as tabelas, e a 2 cria os triggers. Execução:
+
+```bash
+bun run migration:up       # aplica as pendentes
+bun run migration:down     # reverte a última
+bun run migration:status
+```
+
+### 7.7 Testes de integração
+
+`bun run test:integration` usa o PostgreSQL do `docker compose` (`bun run db:up`), em um banco **separado**,
+`jungle_test` (criado se não existir; sobrescrevível por `TEST_DATABASE_URL`). Como cada teste recria o schema
+(`down` e `up` completos, o que também prova a reversibilidade), o nome do banco precisa terminar em `_test`,
+senão a suíte recusa rodar. Cobre:
+
+- **migrations:** aplicam, revertem e reaplicam;
+- **constraints:** cada garantia da seção 7.5 é testada tentando violá-la por SQL direto;
+- **idempotência:** a mesma `BET` 50 vezes em paralelo gera um único débito; replay após reinício da conexão;
+  conflito de payload; redelivery SQS 20 vezes em paralelo;
+- **saldo:** duas apostas de 80 sobre 100; *hot wallet* com 100 apostas concorrentes sobre 50,00; 10 wallets
+  em paralelo; criação concorrente de wallet para o mesmo jogador;
+- **atomicidade:** queda antes do commit não deixa rastro em wallet, ledger, inbox, outbox nem transações;
+- **referências fora de ordem:** `REFUND`/`ROLLBACK` antes da referência, esgotamento e 3 workers concorrentes;
+- **outbox:** perda do processo depois do commit, 3 publishers concorrentes sobre a mesma outbox, queda do
+  broker e publicação duplicada com o mesmo `eventId`.
+
+A invariante `wallet.balance == saldo reconstruído pelo ledger` é verificada ao fim dos testes de dinheiro.
+
+## 8. Interpretações adicionais do enunciado
 
 O enunciado pede que interpretações adicionais sejam documentadas:
 
@@ -327,9 +429,9 @@ O enunciado pede que interpretações adicionais sejam documentadas:
   conflito (`EXTERNAL_ID_REUSED`), não replay: o header é a fonte da verdade.
 - O replay de uma transação devolve seu **estado atual** (ex.: uma `PENDING_REFERENCE` já resolvida volta como
   `PROCESSED`), sempre com o saldo observado quando o resultado foi decidido.
-- `maxReceiveCount` da fila ainda é provisório (seção 8).
+- `maxReceiveCount` da fila ainda é provisório (seção 9).
 
-## 8. Infraestrutura local
+## 9. Infraestrutura local
 
 ```bash
 docker compose up -d
@@ -347,30 +449,34 @@ docker compose up -d
   inbox no banco**, não do SQS FIFO (restrição inviolável nº 3 do enunciado).
 - Variáveis de ambiente: ver `.env.example`.
 
-## 9. Como trabalhamos
+## 10. Como trabalhamos
 
 - **Commits** em inglês, no padrão Conventional Commits (`feat`, `fix`, `test`, `docs`, `build`, `chore`,
   `style`), pequenos e focados, um arquivo por commit.
-- **Qualidade antes de commitar**: `prettier`, `oxlint`, `tsc --noEmit` e `vitest` limpos.
+- **Qualidade antes de commitar**: `prettier`, `oxlint`, `tsc --noEmit`, `vitest` e `test:integration` limpos.
 - **Testes** unitários acompanham cada classe de domínio e cada use case. Integração e concorrência usarão PostgreSQL e SQS
   reais em containers, como pede o enunciado.
 - **Invariantes no banco**: unicidade, imutabilidade do ledger e não-negatividade do saldo serão aplicadas por
   constraints e triggers nas migrations, não só em código.
 
-## 10. Decisões em aberto
+## 11. Decisões em aberto
 
 | Tema | Situação |
 |---|---|
-| ORM | MikroORM (preferencial no enunciado) ainda não instalado; justificar a escolha e o mapeamento do `Money` |
-| Estratégia de concorrência | `SELECT ... FOR UPDATE` na wallet, optimistic locking ou update atômico |
-| Publicação da outbox | `FOR UPDATE SKIP LOCKED` para múltiplos publishers |
 | Mapeamento de status HTTP | a definir (inválido, conflito de idempotência, rejeição de negócio, pendente, falha transitória) |
 | Autenticação | opcional; se não implementada, documentar e deixar ponto de extensão (`AuthPort`) |
 
-## 11. Limitações conhecidas
+## 12. Limitações conhecidas
 
-- Os testes dos use cases usam fakes em memória que **serializam** as unidades de trabalho e não têm rollback:
-  provam a lógica, não a concorrência nem a atomicidade. Isso será provado contra PostgreSQL e SQS reais.
+- Os testes unitários dos use cases usam fakes em memória que **serializam** as unidades de trabalho e não têm
+  rollback: provam a lógica, não a concorrência nem a atomicidade. Isso é provado pelos testes de integração
+  contra PostgreSQL real (seção 7.7).
+- A concorrência foi exercitada com muitas requisições paralelas **dentro de um processo** (pool de 20
+  conexões, cada unidade de trabalho em sua própria conexão e transação). O teste com **3 ou mais processos**
+  separados depende dos entrypoints (HTTP, consumer e workers) e ainda não existe.
+- Não há retry automático de erros transitórios do banco (deadlock `40P01`, falha de serialização `40001`,
+  conexão perdida): hoje o erro sobe ao chamador. O desenho evita deadlocks (a ordem é sempre: linha da
+  transação, depois wallet), mas a política de retry pertence aos adapters de entrada.
 - O publisher da outbox mantém o lock das linhas durante a chamada ao broker. Com lotes pequenos é aceitável;
   se a latência do broker virar problema, separar "reservar" de "publicar".
 - O worker de `PENDING_REFERENCE` trata um erro inesperado propagando-o: uma transação "envenenada" que sempre
