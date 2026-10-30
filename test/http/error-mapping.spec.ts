@@ -82,6 +82,30 @@ describe('classifyTransient', () => {
     expect(classifyTransient({ code: 'ECONNREFUSED' })).toBe('unavailable');
   });
 
+  it.each([
+    'Connection terminated unexpectedly',
+    'Connection terminated due to connection timeout',
+    'timeout exceeded when trying to connect',
+    'Client has encountered a connection error and is not queryable',
+  ])(
+    'recognizes the connection-pool error "%s", which carries no code (a stopped server)',
+    (message) => {
+      expect(classifyTransient(new Error(message))).toBe('unavailable');
+      expect(
+        classifyTransient(new Error('outer', { cause: new Error(message) })),
+      ).toBe('unavailable');
+    },
+  );
+
+  it('does not mistake an unrelated message for an outage', () => {
+    expect(
+      classifyTransient(new Error('syntax error at or near "selec"')),
+    ).toBeUndefined();
+    expect(
+      classifyTransient(new Error('the connection string is invalid')),
+    ).toBeUndefined();
+  });
+
   it('looks through wrapped causes', () => {
     expect(
       classifyTransient(new Error('outer', { cause: { code: '40P01' } })),
