@@ -1,8 +1,10 @@
 import { describeConfig, loadConfig } from '../../src/config/app-config.js';
 import { ConfigError } from '../../src/config/env.js';
+import { SQS_TEST_ENV } from '../support/test-env.js';
 
 const minimal = {
   DATABASE_URL: 'postgresql://jungle:s3cret@localhost:5432/jungle',
+  ...SQS_TEST_ENV,
 };
 
 const problemsOf = (env: Record<string, string>): string[] => {
@@ -115,12 +117,14 @@ describe('loadConfig', () => {
   });
 
   it('rejects a DATABASE_URL that is not PostgreSQL', () => {
-    expect(problemsOf({ DATABASE_URL: 'mysql://localhost/db' })).toEqual([
+    expect(
+      problemsOf({ ...SQS_TEST_ENV, DATABASE_URL: 'mysql://localhost/db' }),
+    ).toEqual([
       expect.stringContaining(
         'DATABASE_URL must use one of postgres:, postgresql:',
       ),
     ]);
-    expect(problemsOf({ DATABASE_URL: 'not a url' })).toEqual([
+    expect(problemsOf({ ...SQS_TEST_ENV, DATABASE_URL: 'not a url' })).toEqual([
       'DATABASE_URL is not a valid URL',
     ]);
   });
@@ -148,6 +152,89 @@ describe('loadConfig', () => {
     expect(() => loadConfig({})).toThrow(
       /invalid configuration:\n {2}- DATABASE_URL is required/,
     );
+  });
+});
+
+describe('loadConfig: SQS and workers', () => {
+  it('defaults the consumer and the workers to on, with safe limits', () => {
+    const { sqs, workers } = loadConfig(minimal);
+
+    expect(sqs).toMatchObject({
+      region: 'us-east-1',
+      endpoint: 'http://localhost:4566',
+      consumer: {
+        enabled: true,
+        maxMessages: 10,
+        waitTimeSeconds: 20,
+        maxAttempts: 5,
+        retryBaseSeconds: 5,
+        retryMaxSeconds: 300,
+      },
+    });
+    expect(workers).toEqual({
+      enabled: true,
+      outbox: { intervalMs: 1_000, batchSize: 50 },
+      pendingReference: { intervalMs: 5_000, batchSize: 50 },
+    });
+  });
+
+  it('works against real AWS: the endpoint override is optional', () => {
+    const { AWS_ENDPOINT_URL: _endpoint, ...withoutEndpoint } = minimal;
+    expect(loadConfig(withoutEndpoint).sqs.endpoint).toBeUndefined();
+  });
+
+  it('can turn the consumer and the workers off, e.g. for an HTTP-only instance', () => {
+    const config = loadConfig({
+      ...minimal,
+      SQS_CONSUMER_ENABLED: 'false',
+      WORKERS_ENABLED: 'false',
+    });
+
+    expect(config.sqs.consumer.enabled).toBe(false);
+    expect(config.workers.enabled).toBe(false);
+  });
+
+  it('requires the three queue urls', () => {
+    const { SQS_QUEUE_URL, SQS_DLQ_URL, SQS_EVENTS_QUEUE_URL, ...rest } =
+      minimal;
+    void [SQS_QUEUE_URL, SQS_DLQ_URL, SQS_EVENTS_QUEUE_URL];
+
+    expect(problemsOf(rest)).toEqual([
+      'SQS_QUEUE_URL is required',
+      'SQS_DLQ_URL is required',
+      'SQS_EVENTS_QUEUE_URL is required',
+    ]);
+  });
+
+  it('keeps the SQS limits inside what the service allows', () => {
+    const problems = problemsOf({
+      ...minimal,
+      SQS_MAX_MESSAGES: '11',
+      SQS_WAIT_TIME_SECONDS: '21',
+      SQS_MAX_ATTEMPTS: '0',
+      OUTBOX_BATCH_SIZE: '501',
+      PENDING_REFERENCE_INTERVAL_MS: '10',
+    });
+
+    expect(problems).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('SQS_MAX_MESSAGES must be <= 10'),
+        expect.stringContaining('SQS_WAIT_TIME_SECONDS must be <= 20'),
+        expect.stringContaining('SQS_MAX_ATTEMPTS must be >= 1'),
+        expect.stringContaining('OUTBOX_BATCH_SIZE must be <= 500'),
+        expect.stringContaining('PENDING_REFERENCE_INTERVAL_MS must be >= 50'),
+      ]),
+    );
+  });
+
+  it('rejects a base retry delay above the cap', () => {
+    expect(
+      problemsOf({
+        ...minimal,
+        SQS_RETRY_BASE_SECONDS: '600',
+        SQS_RETRY_MAX_SECONDS: '60',
+      }),
+    ).toEqual(['SQS_RETRY_BASE_SECONDS must not exceed SQS_RETRY_MAX_SECONDS']);
   });
 });
 
