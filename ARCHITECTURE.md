@@ -50,7 +50,14 @@ src/
 │   ├── wagering/      WagerTransaction, Kind, Status, FailureCode
 │   ├── messaging/     InboxMessage, OutboxMessage
 │   └── events/        IntegrationEvent e os 4 eventos concretos
-├── application/       (planejado) use-cases/ e ports/
+├── application/
+│   ├── ports/         contratos (repositórios, UnitOfWork, publisher, clock, ids, log, métricas)
+│   ├── use-cases/     casos de uso
+│   ├── services/      WagerTransactionProcessor
+│   ├── idempotency/   payload-hash
+│   ├── dtos/          comandos, resultados e views
+│   ├── mappers/       domínio para views
+│   └── errors/        erros de aplicação
 ├── infrastructure/    (planejado) persistence/, messaging/sqs/, auth/
 └── interface/         (planejado) http/, sqs/, workers/, health/
 ```
@@ -79,15 +86,17 @@ de DDD), mas não carregam decorators nem imports de persistência.
 
 - **Modelo de domínio completo** (seção 5): `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`,
   `InboxMessage`, `OutboxMessage`, `IntegrationEvent` com 4 eventos e a taxonomia de `FailureCode`.
-- **Testes unitários** de todas as classes de domínio (Vitest).
+- **Camada `application`** (seção 6): portas, `SubmitWagerTransaction` (com idempotência), `CreateWallet`,
+  `ReprocessPendingReferences`, `PublishOutbox`, `ReconcileWallet` e as consultas.
+- **Testes unitários** de todas as classes de domínio e de todos os use cases (Vitest).
 - **Infra local**: `docker-compose.yml` com PostgreSQL 17 e LocalStack 3.8.1 (somente SQS).
 - **Filas SQS**: `wager-transactions.fifo` e `wager-transactions-dlq.fifo` criadas por
   `docker/localstack/init-sqs.sh`.
 
 ### Pendente
 
-Use cases, portas, persistência (ORM, schema, migrations), API HTTP, consumer SQS, workers (outbox e
-`PENDING_REFERENCE`), reconciliação, observabilidade, testes de integração e de concorrência.
+Persistência (ORM, schema, migrations, adapters das portas), API HTTP, consumer SQS, agendamento dos workers,
+adapters de log e métricas, `/health`, testes de integração e de concorrência.
 
 ## 5. Modelo de domínio
 
@@ -240,7 +249,72 @@ a wallet passada já deve refletir a movimentação, pois `walletVersion` vem de
 `backoffUntil(attempts, now)`: `1s * 2^attempts`, com teto de 5 minutos. É determinístico, sem jitter, para ser
 testável. É compartilhado pela outbox e pelo `PENDING_REFERENCE`.
 
-## 6. Interpretações adicionais do enunciado
+## 6. Camada application
+
+### 6.1 Portas
+
+Classes abstratas em `application/ports/` (servem de token de DI sem decorators): `UnitOfWork` (abre **uma**
+transação SQL e entrega os repositórios ligados a ela), `WalletRepository`, `WagerTransactionRepository`,
+`LedgerRepository`, `InboxRepository`, `OutboxRepository`, `EventPublisher`, `Clock`, `IdGenerator`, `Logger` e
+`Metrics`. Os use cases não têm decorators do NestJS; a ligação ocorre no módulo, por factories.
+
+### 6.2 Use cases
+
+| Use case | Papel |
+|---|---|
+| `SubmitWagerTransaction` | porta de entrada única de HTTP e SQS; idempotência e aplicação do movimento |
+| `CreateWallet` | abre a wallet; saldo positivo gera `OPENING`, lançamento e eventos na mesma transação |
+| `ReprocessPendingReferences` | tick do worker: retenta `PENDING_REFERENCE` com backoff |
+| `PublishOutbox` | tick do worker: publica a outbox |
+| `ReconcileWallet` | compara saldo armazenado × ledger |
+| `GetWallet`, `GetWalletLedger`, `GetWagerTransaction` | consultas |
+
+`WagerTransactionProcessor` concentra a decisão e a aplicação do resultado de uma transação (lock da wallet,
+validação de referência, movimento, eventos). É usado tanto pela primeira tentativa quanto pelas retentativas,
+então as duas seguem as mesmas regras.
+
+### 6.3 Idempotência
+
+A unicidade é decidida **pelo banco**, nunca por leitura seguida de escrita:
+
+1. O `payloadHash` é o SHA-256 (hex) do JSON canônico (chaves ordenadas em todos os níveis, `undefined`
+   descartado) apenas dos campos de negócio: `providerId`, `externalTransactionId`, `playerId`, `walletId`,
+   `roundId`, `gameId`, `kind`, `money` e `referenceExternalTransactionId`. Header, `messageId`, `occurredAt` e
+   `correlationId` ficam de fora. `money` entra via `toJSON()`, então `"25"` e `"25.00"` geram o mesmo hash.
+2. `insertIfAbsent` insere a transação candidata, apoiado nos índices únicos `idempotency_key` e
+   `(provider_id, external_transaction_id)`. Se outra transação concorrente está inserindo a mesma chave, o
+   `INSERT` **espera** o desfecho dela: ninguém observa uma linha meio processada.
+3. Quem **inseriu** aplica o movimento. Quem encontrou uma linha existente responde:
+   - mesma chave e mesmo hash: **replay**, `idempotentReplay: true`, com o saldo observado originalmente
+     (`observedBalance` na transação), não o saldo atual;
+   - mesma chave e hash diferente: `IdempotencyConflictError(PAYLOAD_MISMATCH)`;
+   - mesmo `externalTransactionId` com outra chave: `IdempotencyConflictError(EXTERNAL_ID_REUSED)`.
+4. Como a linha da transação e o movimento confirmam na mesma transação SQL, uma linha confirmada está sempre no
+   estado final (`PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`).
+5. Mensagens SQS passam antes pela **inbox** `(consumerName, messageId)`. Uma redelivery cai no caminho de
+   replay. A inbox é gravada na mesma transação, então só existe se o processamento confirmou.
+
+### 6.4 Referência fora de ordem
+
+Referência ausente (ou ainda pendente) coloca a transação em `PENDING_REFERENCE`. O worker retenta com backoff
+exponencial (1s, 2s, 4s... teto de 5min) até **10 retentativas** (~18min no total); esgotado, a transação é
+`REJECTED` com `REFERENCE_NOT_FOUND` e o evento `WagerTransactionRejected` é publicado. A janela cobre o
+desordenamento normal de um provedor e ainda expõe uma referência realmente perdida. Os workers usam
+`FOR UPDATE SKIP LOCKED` (uma transação por item), então várias instâncias convivem sem se atrapalhar.
+
+### 6.5 Outbox e reconciliação
+
+- `PublishOutbox` reivindica um lote de mensagens vencidas com `FOR UPDATE SKIP LOCKED` (publishers concorrentes
+  pegam lotes disjuntos). Falha ao publicar chama `scheduleRetry` (backoff) e não perde a mensagem. A entrega é
+  *at-least-once*: se o processo morre depois do broker aceitar e antes do commit, outro publisher reenvia, e o
+  consumidor deduplica pelo `eventId`.
+- `ReconcileWallet` trava a wallet, soma o ledger no banco e compara. Divergência é logada (`error`), contada
+  (`wallet_reconciliations_total{result="divergent"}`) e devolvida na resposta, **nunca corrigida**.
+- Métricas já emitidas pelos use cases: `wager_reference_retries_total`, `outbox_lag_seconds`,
+  `outbox_publish_failures_total` e `wallet_reconciliations_total`. As demais (transações por status, duplicatas,
+  DLQ, conflitos de lock, latência) entram com os adapters.
+
+## 7. Interpretações adicionais do enunciado
 
 O enunciado pede que interpretações adicionais sejam documentadas:
 
@@ -249,9 +323,13 @@ O enunciado pede que interpretações adicionais sejam documentadas:
 - `ROLLBACK` não pode referenciar `LOSS`, `OPENING` nem outro `ROLLBACK`.
 - A referência precisa estar `PROCESSED` para ser revertida ou usada.
 - Wallet aberta com saldo zero não gera `OPENING` nem lançamento.
-- O limite de tentativas do `PENDING_REFERENCE` e o `maxReceiveCount` da fila ainda não estão definidos.
+- A mesma operação do provedor (`providerId` + `externalTransactionId`) enviada com **outra** idempotency key é
+  conflito (`EXTERNAL_ID_REUSED`), não replay: o header é a fonte da verdade.
+- O replay de uma transação devolve seu **estado atual** (ex.: uma `PENDING_REFERENCE` já resolvida volta como
+  `PROCESSED`), sempre com o saldo observado quando o resultado foi decidido.
+- `maxReceiveCount` da fila ainda é provisório (seção 8).
 
-## 7. Infraestrutura local
+## 8. Infraestrutura local
 
 ```bash
 docker compose up -d
@@ -269,17 +347,17 @@ docker compose up -d
   inbox no banco**, não do SQS FIFO (restrição inviolável nº 3 do enunciado).
 - Variáveis de ambiente: ver `.env.example`.
 
-## 8. Como trabalhamos
+## 9. Como trabalhamos
 
 - **Commits** em inglês, no padrão Conventional Commits (`feat`, `fix`, `test`, `docs`, `build`, `chore`,
   `style`), pequenos e focados, um arquivo por commit.
 - **Qualidade antes de commitar**: `prettier`, `oxlint`, `tsc --noEmit` e `vitest` limpos.
-- **Testes** unitários acompanham cada classe de domínio. Integração e concorrência usarão PostgreSQL e SQS
+- **Testes** unitários acompanham cada classe de domínio e cada use case. Integração e concorrência usarão PostgreSQL e SQS
   reais em containers, como pede o enunciado.
 - **Invariantes no banco**: unicidade, imutabilidade do ledger e não-negatividade do saldo serão aplicadas por
   constraints e triggers nas migrations, não só em código.
 
-## 9. Decisões em aberto
+## 10. Decisões em aberto
 
 | Tema | Situação |
 |---|---|
@@ -287,10 +365,16 @@ docker compose up -d
 | Estratégia de concorrência | `SELECT ... FOR UPDATE` na wallet, optimistic locking ou update atômico |
 | Publicação da outbox | `FOR UPDATE SKIP LOCKED` para múltiplos publishers |
 | Mapeamento de status HTTP | a definir (inválido, conflito de idempotência, rejeição de negócio, pendente, falha transitória) |
-| Hash do `payloadHash` | JSON canônico (chaves ordenadas) do subconjunto de negócio; algoritmo a documentar |
-| Limite de tentativas / TTL de `PENDING_REFERENCE` | a definir e justificar (o backoff já existe) |
 | Autenticação | opcional; se não implementada, documentar e deixar ponto de extensão (`AuthPort`) |
 
-## 10. Limitações conhecidas
+## 11. Limitações conhecidas
 
-A preencher conforme a implementação avançar.
+- Os testes dos use cases usam fakes em memória que **serializam** as unidades de trabalho e não têm rollback:
+  provam a lógica, não a concorrência nem a atomicidade. Isso será provado contra PostgreSQL e SQS reais.
+- O publisher da outbox mantém o lock das linhas durante a chamada ao broker. Com lotes pequenos é aceitável;
+  se a latência do broker virar problema, separar "reservar" de "publicar".
+- O worker de `PENDING_REFERENCE` trata um erro inesperado propagando-o: uma transação "envenenada" que sempre
+  falha bloquearia a fila até ser corrigida. Um circuito de isolamento (marcar `FAILED` após N falhas
+  inesperadas) fica como evolução.
+- Um `REFUND` seguido de `ROLLBACK` da mesma `BET` é aceito (a regra 4 do enunciado proíbe repetir o **mesmo
+  tipo** de reversão).
