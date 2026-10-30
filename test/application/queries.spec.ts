@@ -11,10 +11,12 @@ import { WagerTransactionStatus } from '../../src/domain/wagering/enums/WagerTra
 import { command, harness, money, next } from './fakes/harness.js';
 
 function setup() {
-  const { db, clock, ids, processor } = harness({ balance: '1000.00' });
+  const { db, clock, ids, processor, metrics } = harness({
+    balance: '1000.00',
+  });
   return {
     db,
-    submit: new SubmitWagerTransaction(db.uow, clock, ids, processor),
+    submit: new SubmitWagerTransaction(db.uow, clock, ids, processor, metrics),
     getWallet: new GetWallet(db.uow),
     getLedger: new GetWalletLedger(db.uow),
     getTransaction: new GetWagerTransaction(db.uow),
