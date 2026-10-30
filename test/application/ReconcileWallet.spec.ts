@@ -8,7 +8,13 @@ function setup() {
   const h = harness({ balance: '1000.00' });
   return {
     ...h,
-    submit: new SubmitWagerTransaction(h.db.uow, h.clock, h.ids, h.processor),
+    submit: new SubmitWagerTransaction(
+      h.db.uow,
+      h.clock,
+      h.ids,
+      h.processor,
+      h.metrics,
+    ),
     reconcile: new ReconcileWallet(h.db.uow, h.metrics, h.logger),
   };
 }
@@ -29,7 +35,9 @@ describe('ReconcileWallet', () => {
       consistent: true,
       checkedEntries: 3,
     });
-    expect(metrics.counters).toEqual([
+    expect(
+      metrics.counters.filter((c) => c.name === 'wallet_reconciliations_total'),
+    ).toEqual([
       {
         name: 'wallet_reconciliations_total',
         labels: { result: 'consistent' },
