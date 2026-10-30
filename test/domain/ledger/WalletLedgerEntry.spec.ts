@@ -1,10 +1,10 @@
 import {
   CurrencyMismatchError,
   InvalidLedgerEntryError,
-} from '../../errors/domain-errors.js';
-import { Money } from '../../money/model/Money.js';
-import { LedgerDirection } from '../enums/LedgerDirection.js';
-import { WalletLedgerEntry } from './WalletLedgerEntry.js';
+} from '../../../src/domain/errors/domain-errors.js';
+import { Money } from '../../../src/domain/money/model/Money.js';
+import { LedgerDirection } from '../../../src/domain/ledger/enums/LedgerDirection.js';
+import { WalletLedgerEntry } from '../../../src/domain/ledger/model/WalletLedgerEntry.js';
 
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 
