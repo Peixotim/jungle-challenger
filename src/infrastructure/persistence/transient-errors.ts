@@ -26,6 +26,12 @@ const UNAVAILABLE_CODES = new Set([
   'ENOTFOUND',
   'EPIPE',
 ]);
+const UNAVAILABLE_MESSAGES = [
+  'Connection terminated unexpectedly',
+  'Connection terminated due to connection timeout',
+  'timeout exceeded when trying to connect',
+  'Client has encountered a connection error and is not queryable',
+];
 const MAX_CAUSE_DEPTH = 4;
 
 export function classifyTransient(error: unknown): TransientKind | undefined {
@@ -44,6 +50,13 @@ export function classifyTransient(error: unknown): TransientKind | undefined {
     if (typeof code === 'string') {
       if (LOCK_CONFLICT_CODES.has(code)) return 'lock_conflict';
       if (UNAVAILABLE_CODES.has(code)) return 'unavailable';
+    }
+    const message = (current as { message?: unknown }).message;
+    if (
+      typeof message === 'string' &&
+      UNAVAILABLE_MESSAGES.some((known) => message.startsWith(known))
+    ) {
+      return 'unavailable';
     }
     current = (current as { cause?: unknown }).cause;
   }
