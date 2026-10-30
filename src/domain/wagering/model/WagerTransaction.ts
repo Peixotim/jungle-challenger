@@ -14,7 +14,6 @@ import { FailureCode } from '../enums/FailureCode.js';
 import { WagerTransactionKind as Kind } from '../enums/WagerTransactionKind.js';
 import { WagerTransactionStatus as Status } from '../enums/WagerTransactionStatus.js';
 
-/** Valid transitions. PROCESSED, REJECTED and FAILED are terminal. */
 const TRANSITIONS: Record<Status, readonly Status[]> = {
   [Status.Pending]: [
     Status.PendingReference,
@@ -28,7 +27,6 @@ const TRANSITIONS: Record<Status, readonly Status[]> = {
   [Status.Failed]: [],
 };
 
-/** Kinds each operation may reference. BET/OPENING never reference anything. */
 const REFERENCEABLE: Record<Kind, readonly Kind[]> = {
   [Kind.Opening]: [],
   [Kind.Bet]: [],
@@ -63,7 +61,6 @@ export class WagerTransaction {
   readonly gameId: string;
   readonly kind: Kind;
   readonly money: Money;
-  /** id at the provider, not the internal one */
   readonly referenceExternalTransactionId: string | undefined;
   readonly createdAt: Date;
 
@@ -71,6 +68,7 @@ export class WagerTransaction {
   private _referenceTransactionId?: string;
   private _failureCode?: FailureCode;
   private _processedAt?: Date;
+  private _observedBalance?: Money;
   private _referenceAttempts: number;
   private _nextReferenceAttemptAt?: Date;
 
@@ -92,11 +90,11 @@ export class WagerTransaction {
     this._referenceTransactionId = s.referenceTransactionId;
     this._failureCode = s.failureCode;
     this._processedAt = s.processedAt;
+    this._observedBalance = s.observedBalance;
     this._referenceAttempts = s.referenceAttempts;
     this._nextReferenceAttemptAt = s.nextReferenceAttemptAt;
   }
 
-  /** Born PENDING. Provider-facing: OPENING is rejected here (see `opening`). */
   static create(props: CreateWagerTransactionProps): WagerTransaction {
     if (props.kind === Kind.Opening) {
       throw new InvalidTransactionError(
@@ -138,7 +136,6 @@ export class WagerTransaction {
     });
   }
 
-  /** Internal OPENING credit of a new wallet. One per wallet: the external id is derived from the wallet. */
   static opening(props: CreateOpeningTransactionProps): WagerTransaction {
     if (!props.money.isPositive()) {
       throw new InvalidTransactionError('amount must be positive');
@@ -162,7 +159,6 @@ export class WagerTransaction {
     });
   }
 
-  /** Rebuilds a persisted transaction; does not revalidate transitions. */
   static rehydrate(state: WagerTransactionState): WagerTransaction {
     return new WagerTransaction(state);
   }
@@ -183,6 +179,10 @@ export class WagerTransaction {
     return this._processedAt;
   }
 
+  get observedBalance(): Money | undefined {
+    return this._observedBalance;
+  }
+
   get referenceAttempts(): number {
     return this._referenceAttempts;
   }
@@ -191,9 +191,11 @@ export class WagerTransaction {
     return this._nextReferenceAttemptAt;
   }
 
-  // ---- transitions (throw InvalidTransactionStateError when not allowed)
-
-  markProcessed(referenceTransactionId: string | undefined, at: Date): void {
+  markProcessed(
+    referenceTransactionId: string | undefined,
+    at: Date,
+    observedBalance?: Money,
+  ): void {
     if (this.requiresReference() && referenceTransactionId === undefined) {
       throw new InvalidTransactionError(
         `${this.kind} requires the resolved reference`,
@@ -202,16 +204,15 @@ export class WagerTransaction {
     this.transitionTo(Status.Processed);
     this._referenceTransactionId = referenceTransactionId;
     this._processedAt = at;
+    this._observedBalance = observedBalance;
   }
 
-  /** Reference not found yet: park the transaction and schedule the first retry. */
   markPendingReference(now: Date): void {
     this.transitionTo(Status.PendingReference);
     this._referenceAttempts = 0;
     this._nextReferenceAttemptAt = backoffUntil(0, now);
   }
 
-  /** Reference still missing after a retry: count it and push the next attempt out (exponential backoff). */
   scheduleReferenceRetry(now: Date): void {
     if (this._status !== Status.PendingReference) {
       throw new InvalidTransactionStateError(
@@ -224,17 +225,16 @@ export class WagerTransaction {
     this._nextReferenceAttemptAt = backoffUntil(this._referenceAttempts, now);
   }
 
-  reject(code: FailureCode): void {
+  reject(code: FailureCode, observedBalance?: Money): void {
     this.transitionTo(Status.Rejected);
     this._failureCode = code;
+    this._observedBalance = observedBalance;
   }
 
   fail(code: FailureCode): void {
     this.transitionTo(Status.Failed);
     this._failureCode = code;
   }
-
-  // ---- domain queries
 
   isTerminal(): boolean {
     return TRANSITIONS[this._status].length === 0;
@@ -260,14 +260,12 @@ export class WagerTransaction {
     );
   }
 
-  /** Why an overdraw was refused: a BET lacking funds vs. a reversal that would go negative. */
   overdrawFailureCode(): FailureCode {
     return this.kind === Kind.Bet
       ? FailureCode.InsufficientFunds
       : FailureCode.ReversalWouldOverdraw;
   }
 
-  /** Direction of the ledger entry this transaction produces. ROLLBACK needs the reference to invert. */
   ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
     switch (this.kind) {
       case Kind.Bet:
@@ -290,10 +288,6 @@ export class WagerTransaction {
     }
   }
 
-  /**
-   * Business check of the resolved reference. Returns the failure code, or undefined when valid.
-   * "Already reverted" needs a lookup and is enforced by the use case + a unique index.
-   */
   checkReference(reference: WagerTransaction): FailureCode | undefined {
     if (
       reference.externalTransactionId !== this.referenceExternalTransactionId ||
