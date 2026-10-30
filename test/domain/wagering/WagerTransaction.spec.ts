@@ -1,14 +1,14 @@
 import {
   InvalidTransactionError,
   InvalidTransactionStateError,
-} from '../../errors/domain-errors.js';
-import { LedgerDirection } from '../../ledger/enums/LedgerDirection.js';
-import { Money } from '../../money/model/Money.js';
-import { CreateWagerTransactionProps } from '../dtos/CreateWagerTransactionProps.js';
-import { FailureCode } from '../enums/FailureCode.js';
-import { WagerTransactionKind as Kind } from '../enums/WagerTransactionKind.js';
-import { WagerTransactionStatus as Status } from '../enums/WagerTransactionStatus.js';
-import { WagerTransaction } from './WagerTransaction.js';
+} from '../../../src/domain/errors/domain-errors.js';
+import { LedgerDirection } from '../../../src/domain/ledger/enums/LedgerDirection.js';
+import { Money } from '../../../src/domain/money/model/Money.js';
+import { CreateWagerTransactionProps } from '../../../src/domain/wagering/dtos/CreateWagerTransactionProps.js';
+import { FailureCode } from '../../../src/domain/wagering/enums/FailureCode.js';
+import { WagerTransactionKind as Kind } from '../../../src/domain/wagering/enums/WagerTransactionKind.js';
+import { WagerTransactionStatus as Status } from '../../../src/domain/wagering/enums/WagerTransactionStatus.js';
+import { WagerTransaction } from '../../../src/domain/wagering/model/WagerTransaction.js';
 
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 const now = new Date('2026-01-01T00:00:00Z');
