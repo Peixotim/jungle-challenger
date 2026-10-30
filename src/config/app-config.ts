@@ -29,6 +29,26 @@ export interface AppConfig {
     requireMigrated: boolean;
   };
   processing: { maxReferenceAttempts: number };
+  sqs: {
+    region: string;
+    endpoint?: string;
+    queueUrl: string;
+    dlqUrl: string;
+    eventsQueueUrl: string;
+    consumer: {
+      enabled: boolean;
+      maxMessages: number;
+      waitTimeSeconds: number;
+      maxAttempts: number;
+      retryBaseSeconds: number;
+      retryMaxSeconds: number;
+    };
+  };
+  workers: {
+    enabled: boolean;
+    outbox: { intervalMs: number; batchSize: number };
+    pendingReference: { intervalMs: number; batchSize: number };
+  };
 }
 
 export function loadConfig(env: Env = process.env): AppConfig {
@@ -85,9 +105,77 @@ export function loadConfig(env: Env = process.env): AppConfig {
         max: 100,
       }),
     },
+    sqs: {
+      region: reader.string('AWS_REGION', 'us-east-1'),
+      endpoint: reader.optionalUrl('AWS_ENDPOINT_URL', ['http:', 'https:']),
+      queueUrl: reader.requiredUrl('SQS_QUEUE_URL', ['http:', 'https:']),
+      dlqUrl: reader.requiredUrl('SQS_DLQ_URL', ['http:', 'https:']),
+      eventsQueueUrl: reader.requiredUrl('SQS_EVENTS_QUEUE_URL', [
+        'http:',
+        'https:',
+      ]),
+      consumer: {
+        enabled: reader.boolean('SQS_CONSUMER_ENABLED', true),
+        maxMessages: reader.integer('SQS_MAX_MESSAGES', {
+          default: 10,
+          min: 1,
+          max: 10,
+        }),
+        waitTimeSeconds: reader.integer('SQS_WAIT_TIME_SECONDS', {
+          default: 20,
+          min: 0,
+          max: 20,
+        }),
+        maxAttempts: reader.integer('SQS_MAX_ATTEMPTS', {
+          default: 5,
+          min: 1,
+          max: 20,
+        }),
+        retryBaseSeconds: reader.integer('SQS_RETRY_BASE_SECONDS', {
+          default: 5,
+          min: 0,
+          max: 43_200,
+        }),
+        retryMaxSeconds: reader.integer('SQS_RETRY_MAX_SECONDS', {
+          default: 300,
+          min: 0,
+          max: 43_200,
+        }),
+      },
+    },
+    workers: {
+      enabled: reader.boolean('WORKERS_ENABLED', true),
+      outbox: {
+        intervalMs: reader.integer('OUTBOX_INTERVAL_MS', {
+          default: 1_000,
+          min: 50,
+        }),
+        batchSize: reader.integer('OUTBOX_BATCH_SIZE', {
+          default: 50,
+          min: 1,
+          max: 500,
+        }),
+      },
+      pendingReference: {
+        intervalMs: reader.integer('PENDING_REFERENCE_INTERVAL_MS', {
+          default: 5_000,
+          min: 50,
+        }),
+        batchSize: reader.integer('PENDING_REFERENCE_BATCH_SIZE', {
+          default: 50,
+          min: 1,
+          max: 500,
+        }),
+      },
+    },
   };
 
-  const { http, database } = config;
+  const { http, database, sqs } = config;
+  if (sqs.consumer.retryBaseSeconds > sqs.consumer.retryMaxSeconds) {
+    reader.problems.push(
+      'SQS_RETRY_BASE_SECONDS must not exceed SQS_RETRY_MAX_SECONDS',
+    );
+  }
   if (database.poolMin > database.poolMax) {
     reader.problems.push('DATABASE_POOL_MIN must not exceed DATABASE_POOL_MAX');
   }
@@ -117,6 +205,13 @@ export function describeConfig(config: AppConfig): Record<string, unknown> {
       poolMax: config.database.poolMax,
       requireMigrated: config.database.requireMigrated,
     },
+    sqs: {
+      region: config.sqs.region,
+      endpoint: config.sqs.endpoint,
+      queueUrl: config.sqs.queueUrl,
+      consumerEnabled: config.sqs.consumer.enabled,
+    },
+    workersEnabled: config.workers.enabled,
     logLevel: config.log.level,
     maxReferenceAttempts: config.processing.maxReferenceAttempts,
     shutdownTimeoutMs: config.shutdownTimeoutMs,
