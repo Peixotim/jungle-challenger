@@ -19,4 +19,9 @@ awslocal sqs create-queue --queue-name "$MAIN_QUEUE" --attributes "{
   \"RedrivePolicy\": \"{\\\"deadLetterTargetArn\\\":\\\"$DLQ_ARN\\\",\\\"maxReceiveCount\\\":\\\"$MAX_RECEIVES\\\"}\"
 }"
 
-echo "SQS queues ready: $MAIN_QUEUE (DLQ: $DLQ, maxReceiveCount=$MAX_RECEIVES)"
+EVENTS_QUEUE="wager-events.fifo"
+
+awslocal sqs create-queue --queue-name "$EVENTS_QUEUE" \
+  --attributes FifoQueue=true,ContentBasedDeduplication=false,VisibilityTimeout=30
+
+echo "SQS queues ready: $MAIN_QUEUE (DLQ: $DLQ, maxReceiveCount=$MAX_RECEIVES), $EVENTS_QUEUE"
