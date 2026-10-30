@@ -9,7 +9,13 @@ function setup(maxReferenceAttempts?: number) {
   const h = harness({ balance: '1000.00', maxReferenceAttempts });
   return {
     ...h,
-    submit: new SubmitWagerTransaction(h.db.uow, h.clock, h.ids, h.processor),
+    submit: new SubmitWagerTransaction(
+      h.db.uow,
+      h.clock,
+      h.ids,
+      h.processor,
+      h.metrics,
+    ),
     worker: new ReprocessPendingReferences(
       h.db.uow,
       h.clock,
