@@ -19,11 +19,17 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "test:integration": "vitest run --config ./vitest.config.integration.ts",
+    "db:up": "docker compose up -d --wait",
+    "migration:up": "bun src/infrastructure/persistence/migrate.ts up",
+    "migration:down": "bun src/infrastructure/persistence/migrate.ts down",
+    "migration:status": "bun src/infrastructure/persistence/migrate.ts status"
   },
   "dependencies": {
     "@mikro-orm/core": "^7.2.5",
     "@mikro-orm/decorators": "^7.2.5",
+    "@mikro-orm/migrations": "^7.2.5",
     "@mikro-orm/nestjs": "^7.1.0",
     "@mikro-orm/postgresql": "^7.2.5",
     "@nestjs/common": "^12.0.1",
