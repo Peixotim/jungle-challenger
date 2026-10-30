@@ -300,6 +300,10 @@ export class RecordingLogger extends Logger {
   readonly entries: { level: string; message: string; fields?: LogFields }[] =
     [];
 
+  debug(message: string, fields?: LogFields): void {
+    this.entries.push({ level: 'debug', message, fields });
+  }
+
   info(message: string, fields?: LogFields): void {
     this.entries.push({ level: 'info', message, fields });
   }
