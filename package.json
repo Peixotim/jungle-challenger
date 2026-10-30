@@ -26,7 +26,8 @@
     "db:up": "docker compose up -d --wait",
     "migration:up": "bun src/infrastructure/persistence/migrate.ts up",
     "migration:down": "bun src/infrastructure/persistence/migrate.ts down",
-    "migration:status": "bun src/infrastructure/persistence/migrate.ts status"
+    "migration:status": "bun src/infrastructure/persistence/migrate.ts status",
+    "load:smoke": "k6 run --summary-export=load/results/smoke.json load/scenarios/smoke.js"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3",
