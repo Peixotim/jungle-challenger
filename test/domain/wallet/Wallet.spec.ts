@@ -3,10 +3,10 @@ import {
   InsufficientFundsError,
   InvalidMoneyError,
   InvalidWalletError,
-} from '../../errors/domain-errors.js';
-import { LedgerDirection } from '../../ledger/enums/LedgerDirection.js';
-import { Money } from '../../money/model/Money.js';
-import { Wallet } from './Wallet.js';
+} from '../../../src/domain/errors/domain-errors.js';
+import { LedgerDirection } from '../../../src/domain/ledger/enums/LedgerDirection.js';
+import { Money } from '../../../src/domain/money/model/Money.js';
+import { Wallet } from '../../../src/domain/wallet/model/Wallet.js';
 
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 const t0 = new Date('2026-01-01T00:00:00Z');
