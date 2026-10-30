@@ -55,8 +55,11 @@ src/
 └── interface/         (planejado) http/, sqs/, workers/, health/
 ```
 
-Convenção dentro de cada módulo de domínio: `model/` (classes), `dtos/` (props e state), `enums/`. Os testes
-ficam ao lado da classe (`Classe.spec.ts`).
+Convenção dentro de cada módulo de domínio: `model/` (classes), `dtos/` (props e state), `enums/`.
+
+Os testes ficam fora de `src/`, em `test/`, espelhando a estrutura de `src/`: por exemplo, `Money` fica em
+`src/domain/money/model/Money.ts` e seu teste em `test/domain/money/Money.spec.ts`. Testes de integração e de
+concorrência seguirão o mesmo princípio, em pastas próprias dentro de `test/`.
 
 ## 3. Domínio ≠ ORM
 
