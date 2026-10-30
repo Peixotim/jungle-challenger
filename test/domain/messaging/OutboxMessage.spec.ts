@@ -1,6 +1,6 @@
-import { InvalidMessageStateError } from '../../errors/domain-errors.js';
-import { IntegrationEvent } from '../../events/model/IntegrationEvent.js';
-import { OutboxMessage } from './OutboxMessage.js';
+import { InvalidMessageStateError } from '../../../src/domain/errors/domain-errors.js';
+import { IntegrationEvent } from '../../../src/domain/events/model/IntegrationEvent.js';
+import { OutboxMessage } from '../../../src/domain/messaging/model/OutboxMessage.js';
 
 class TestEvent extends IntegrationEvent<{ value: string }> {
   readonly eventType = 'TestEvent';
