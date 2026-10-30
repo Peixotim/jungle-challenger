@@ -1,5 +1,4 @@
 #!/bin/sh
-# Runs inside LocalStack once it is ready. Creates the FIFO queue + DLQ (README section 10).
 set -eu
 
 MAIN_QUEUE="wager-transactions.fifo"
