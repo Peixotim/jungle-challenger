@@ -11,6 +11,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { Logger } from '../../src/application/ports/Logger.js';
+import { SQS_TEST_ENV } from '../support/test-env.js';
 import { configureApp } from '../../src/bootstrap/configure-app.js';
 import { loadConfig } from '../../src/config/app-config.js';
 import { JsonLogger } from '../../src/infrastructure/observability/JsonLogger.js';
@@ -48,6 +49,7 @@ class ProbeController {
 async function boot(level: 'debug' | 'info' = 'debug') {
   const lines: string[] = [];
   const config = loadConfig({
+    ...SQS_TEST_ENV,
     DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
     HTTP_BODY_LIMIT: '1kb',
     HTTP_KEEP_ALIVE_TIMEOUT_MS: '7000',
