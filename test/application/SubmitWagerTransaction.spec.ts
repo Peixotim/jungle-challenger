@@ -10,12 +10,75 @@ import { WagerTransactionStatus as Status } from '../../src/domain/wagering/enum
 import { command, harness, money, next } from './fakes/harness.js';
 
 function setup(balance = '1000.00') {
-  const { db, clock, ids, processor } = harness({ balance });
-  const useCase = new SubmitWagerTransaction(db.uow, clock, ids, processor);
-  return { db, useCase };
+  const { db, clock, ids, processor, metrics } = harness({ balance });
+  const useCase = new SubmitWagerTransaction(
+    db.uow,
+    clock,
+    ids,
+    processor,
+    metrics,
+  );
+  return { db, useCase, metrics };
 }
 
 describe('SubmitWagerTransaction', () => {
+  describe('metrics', () => {
+    it('counts new transactions by kind and status, and replays apart', async () => {
+      const { useCase, metrics } = setup('10.00');
+
+      await useCase.execute(command({ money: money('5.00') }));
+      await useCase.execute(next('tx-2', { money: money('500.00') }));
+      await useCase.execute(command({ money: money('5.00') }));
+
+      expect(
+        metrics.counters.filter((c) => c.name === 'wager_transactions_total'),
+      ).toEqual([
+        {
+          name: 'wager_transactions_total',
+          labels: { kind: 'BET', status: Status.Processed },
+        },
+        {
+          name: 'wager_transactions_total',
+          labels: { kind: 'BET', status: Status.Rejected },
+        },
+      ]);
+      expect(
+        metrics.counters.filter((c) => c.name === 'wager_duplicates_total'),
+      ).toEqual([{ name: 'wager_duplicates_total', labels: { kind: 'BET' } }]);
+    });
+
+    it('counts idempotency conflicts by reason', async () => {
+      const { useCase, metrics } = setup();
+      await useCase.execute(command());
+
+      await expect(
+        useCase.execute(command({ money: money('30.00') })),
+      ).rejects.toBeInstanceOf(IdempotencyConflictError);
+      await expect(
+        useCase.execute(command({ idempotencyKey: 'other' })),
+      ).rejects.toBeInstanceOf(IdempotencyConflictError);
+
+      expect(
+        metrics.counters
+          .filter((c) => c.name === 'wager_idempotency_conflicts_total')
+          .map((c) => c.labels?.reason),
+      ).toEqual(['PAYLOAD_MISMATCH', 'EXTERNAL_ID_REUSED']);
+    });
+
+    it('records the processing time of every call, replays included', async () => {
+      const { useCase, metrics } = setup();
+
+      await useCase.execute(command());
+      await useCase.execute(command());
+
+      expect(
+        metrics.observations.filter(
+          (o) => o.name === 'wager_processing_seconds',
+        ),
+      ).toHaveLength(2);
+    });
+  });
+
   describe('applying operations', () => {
     it('BET debits the wallet and records ledger and events', async () => {
       const { db, useCase } = setup();
