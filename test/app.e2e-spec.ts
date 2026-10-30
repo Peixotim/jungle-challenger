@@ -63,6 +63,7 @@ describe('application bootstrap (e2e)', () => {
       instance,
       instance.get<AppConfig>(APP_CONFIG),
       instance.get(JsonLogger),
+      instance.get(PrometheusMetrics),
     );
     await instance.init();
     app = instance;
