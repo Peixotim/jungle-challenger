@@ -21,6 +21,7 @@ import {
   TestDatabase,
   testDatabaseUrl,
 } from './integration/support/database.js';
+import { applicationTestEnv } from './support/test-env.js';
 
 describe('application bootstrap (e2e)', () => {
   const originalEnv = { ...process.env };
@@ -37,12 +38,7 @@ describe('application bootstrap (e2e)', () => {
 
   beforeEach(async () => {
     await db.reset();
-    process.env = {
-      ...originalEnv,
-      NODE_ENV: 'test',
-      LOG_LEVEL: 'error',
-      DATABASE_URL: testDatabaseUrl(),
-    };
+    process.env = { ...originalEnv, ...applicationTestEnv(testDatabaseUrl()) };
   });
 
   afterEach(async () => {
