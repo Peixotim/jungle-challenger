@@ -26,7 +26,7 @@ export abstract class IntegrationEvent<T> {
     this.occurredAt = props.occurredAt;
     this.data = props.data;
   }
-  
+
   toJSON(): {
     eventId: string;
     eventType: string;
