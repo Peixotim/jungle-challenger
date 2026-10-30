@@ -578,7 +578,9 @@ O mapeamento é único para todos os endpoints (um só filtro de exceções mais
 | Erro inesperado | `500` | `INTERNAL_ERROR` | reenvia com a mesma chave; a causa está no log com o `correlationId` |
 
 Falha transitória cobre queda ou recusa de conexão, deadlock, falha de serialização e conflito de lock
-(classificadas por SQLSTATE e por causa encadeada, em `transient-errors.ts`). Um erro de constraint ou de
+(classificadas por SQLSTATE, por causa encadeada e por mensagens conhecidas do pool de conexões, como
+`Connection terminated unexpectedly`, que o driver lança sem código quando o servidor para; ver
+`transient-errors.ts`). Um erro de constraint ou de
 programação **não** é tratado como transitório, para o provedor não reenviar em loop algo que nunca vai passar.
 A rejeição `422` é definitiva e **também é devolvida igual no replay**.
 
