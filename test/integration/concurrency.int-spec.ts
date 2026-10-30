@@ -256,6 +256,7 @@ describe('concurrency and failure recovery (real PostgreSQL)', () => {
         app.clock,
         app.ids,
         new WagerTransactionProcessor(app.clock, app.ids),
+        app.metrics,
       );
       const command = {
         ...operation(wallet),
