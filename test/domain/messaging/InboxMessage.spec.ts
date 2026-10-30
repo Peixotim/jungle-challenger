@@ -1,5 +1,5 @@
-import { InvalidMessageStateError } from '../../errors/domain-errors.js';
-import { InboxMessage } from './InboxMessage.js';
+import { InvalidMessageStateError } from '../../../src/domain/errors/domain-errors.js';
+import { InboxMessage } from '../../../src/domain/messaging/model/InboxMessage.js';
 
 const receivedAt = new Date('2026-01-01T00:00:00Z');
 const receive = (over = {}) =>
