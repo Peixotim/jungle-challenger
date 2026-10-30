@@ -1,4 +1,7 @@
-import { CurrencyMismatchError, InvalidMoneyError } from '../../errors/domain-errors.js';
+import {
+  CurrencyMismatchError,
+  InvalidMoneyError,
+} from '../../errors/domain-errors.js';
 import { Money } from './Money.js';
 
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
@@ -10,28 +13,44 @@ describe('Money', () => {
       expect(brl('25.5').toJSON().amount).toBe('25.50');
     });
 
-    it.each(['', ' ', 'NaN', 'Infinity', '1e3', '1.001', '-1.00', '+1.00', '1,00', '.5', 'abc'])(
-      'rejects invalid amount %j',
-      (amount) => {
-        expect(() => brl(amount)).toThrow(InvalidMoneyError);
-      },
-    );
+    it.each([
+      '',
+      ' ',
+      'NaN',
+      'Infinity',
+      '1e3',
+      '1.001',
+      '-1.00',
+      '+1.00',
+      '1,00',
+      '.5',
+      'abc',
+    ])('rejects invalid amount %j', (amount) => {
+      expect(() => brl(amount)).toThrow(InvalidMoneyError);
+    });
 
     it('rejects non-string amount', () => {
-      expect(() => Money.from({ amount: 25 as unknown as string, currency: 'BRL' })).toThrow(
-        InvalidMoneyError,
-      );
+      expect(() =>
+        Money.from({ amount: 25 as unknown as string, currency: 'BRL' }),
+      ).toThrow(InvalidMoneyError);
     });
 
-    it.each(['', 'br', 'brl', 'BRLL', 'B1L'])('rejects invalid currency %j', (currency) => {
-      expect(() => Money.from({ amount: '1.00', currency })).toThrow(InvalidMoneyError);
-    });
+    it.each(['', 'br', 'brl', 'BRLL', 'B1L'])(
+      'rejects invalid currency %j',
+      (currency) => {
+        expect(() => Money.from({ amount: '1.00', currency })).toThrow(
+          InvalidMoneyError,
+        );
+      },
+    );
   });
 
   describe('arithmetic', () => {
     it('adds and subtracts exactly (no float drift)', () => {
       expect(brl('0.10').add(brl('0.20')).toJSON().amount).toBe('0.30');
-      expect(brl('100.00').subtract(brl('80.00')).toJSON().amount).toBe('20.00');
+      expect(brl('100.00').subtract(brl('80.00')).toJSON().amount).toBe(
+        '20.00',
+      );
     });
 
     it('is immutable', () => {
@@ -69,7 +88,9 @@ describe('Money', () => {
 
     it('equals compares value and currency', () => {
       expect(brl('1.00').equals(brl('1'))).toBe(true);
-      expect(brl('1.00').equals(Money.from({ amount: '1.00', currency: 'USD' }))).toBe(false);
+      expect(
+        brl('1.00').equals(Money.from({ amount: '1.00', currency: 'USD' })),
+      ).toBe(false);
     });
   });
 
@@ -85,6 +106,8 @@ describe('Money', () => {
 
   it('serializes', () => {
     expect(brl('25').toString()).toBe('25.00 BRL');
-    expect(JSON.stringify({ m: brl('25') })).toBe('{"m":{"amount":"25.00","currency":"BRL"}}');
+    expect(JSON.stringify({ m: brl('25') })).toBe(
+      '{"m":{"amount":"25.00","currency":"BRL"}}',
+    );
   });
 });
