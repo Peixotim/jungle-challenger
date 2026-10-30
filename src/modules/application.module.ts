@@ -46,13 +46,20 @@ const USE_CASES = [
     },
     {
       provide: SubmitWagerTransaction,
-      inject: [UnitOfWork, Clock, IdGenerator, WagerTransactionProcessor],
+      inject: [
+        UnitOfWork,
+        Clock,
+        IdGenerator,
+        WagerTransactionProcessor,
+        Metrics,
+      ],
       useFactory: (
         uow: UnitOfWork,
         clock: Clock,
         ids: IdGenerator,
         processor: WagerTransactionProcessor,
-      ) => new SubmitWagerTransaction(uow, clock, ids, processor),
+        metrics: Metrics,
+      ) => new SubmitWagerTransaction(uow, clock, ids, processor, metrics),
     },
     {
       provide: CreateWallet,
