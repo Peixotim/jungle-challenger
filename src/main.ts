@@ -9,6 +9,7 @@ import { loadEnvFile } from './config/load-env-file.js';
 import { ConfigError } from './config/env.js';
 import { LifecycleState } from './infrastructure/lifecycle/LifecycleState.js';
 import { JsonLogger } from './infrastructure/observability/JsonLogger.js';
+import { PrometheusMetrics } from './infrastructure/observability/PrometheusMetrics.js';
 
 async function bootstrap(): Promise<void> {
   loadEnvFile();
@@ -22,7 +23,7 @@ async function bootstrap(): Promise<void> {
   const logger = app.get(JsonLogger);
 
   app.useLogger(logger);
-  configureApp(app, config, logger);
+  configureApp(app, config, logger, app.get(PrometheusMetrics));
   registerGracefulShutdown({
     app,
     logger,
