@@ -68,6 +68,7 @@ describe('SQS (real LocalStack and PostgreSQL)', () => {
   });
 
   afterAll(async () => {
+    await purgeAll(sqs);
     await db.close();
   });
 
