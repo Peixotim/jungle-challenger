@@ -19,6 +19,8 @@ bun run start:bun          # sobe o serviço em http://localhost:8080
 Em outro terminal: `curl http://localhost:8080/health/ready`. Para rodar os testes: `bun run test`,
 `bun run test:integration` e `bun run test:e2e` (seção 4).
 
+Testes de carga (k6): veja [LOAD.md](./LOAD.md).
+
 ## 1. Pré-requisitos
 
 | Ferramenta | Versão testada | Observação |
