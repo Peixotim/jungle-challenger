@@ -121,6 +121,18 @@ describe('WagerTransaction', () => {
       expect(tx.isTerminal()).toBe(true);
     });
 
+    it('keeps the balance observed when the outcome was decided', () => {
+      const processedTx = make();
+      processedTx.markProcessed(undefined, now, brl('975.00'));
+      expect(processedTx.observedBalance?.toJSON().amount).toBe('975.00');
+
+      const rejectedTx = make();
+      rejectedTx.reject(FailureCode.InsufficientFunds, brl('10.00'));
+      expect(rejectedTx.observedBalance?.toJSON().amount).toBe('10.00');
+
+      expect(make().observedBalance).toBeUndefined();
+    });
+
     it('PENDING -> PENDING_REFERENCE schedules the first retry; then PROCESSED with the reference', () => {
       const tx = makeReversal(Kind.Refund);
       tx.markPendingReference(now);
@@ -254,7 +266,7 @@ describe('WagerTransaction', () => {
       const rollback = makeReversal(Kind.Rollback);
       expect(rollback.ledgerDirectionFor(processed())).toBe(
         LedgerDirection.Credit,
-      ); // of a BET
+      );
       expect(rollback.ledgerDirectionFor(processed({ kind: Kind.Win }))).toBe(
         LedgerDirection.Debit,
       );
